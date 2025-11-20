@@ -4,6 +4,18 @@ export default {
     const pathname = url.pathname;
 
     // ---------------------------
+    // 0. API Key 驗證
+    // ---------------------------
+    const apiKey = request.headers.get("x-api-key");
+
+    if (!apiKey || apiKey !== env.API_KEY) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Unauthorized" }),
+        { status: 403, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // ---------------------------
     // Make.com API
     // ---------------------------
     if (request.method === "POST" && pathname === "/api/external/make/chat") {
@@ -28,26 +40,18 @@ export default {
           );
         }
 
-        // ---- 1. 寫入 user prompt 進 D1 ----
         await env.DB.prepare(
           `INSERT INTO chat_logs (line_id, role, content, created_at)
            VALUES (?1, 'user', ?2, datetime('now'))`
-        )
-          .bind(lineId, userPrompt)
-          .run();
+        ).bind(lineId, userPrompt).run();
 
-        // ---- 2. AI 回覆 - 暫時是 stub, 之後可以串 LLM ----
         const assistantReply = `收到你的訊息：「${userPrompt}」`;
 
-        // ---- 3. 寫入 assistant 回應 ----
         await env.DB.prepare(
           `INSERT INTO chat_logs (line_id, role, content, created_at)
            VALUES (?1, 'assistant', ?2, datetime('now'))`
-        )
-          .bind(lineId, assistantReply)
-          .run();
+        ).bind(lineId, assistantReply).run();
 
-        // ---- 4. 回傳給 Make.com ----
         return new Response(
           JSON.stringify({
             success: true,
@@ -67,9 +71,6 @@ export default {
       }
     }
 
-    // ---------------------------
-    // Default Response
-    // ---------------------------
     return new Response(
       JSON.stringify({
         success: true,
