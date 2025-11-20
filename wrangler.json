@@ -1,0 +1,16 @@
+{
+  "compatibility_date": "2025-10-08",
+  "main": "src/index.ts",
+  "name": "ai-xiaomi-svc",
+  "upload_source_maps": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "19e26ba2-6d58-4cd8-a151-e4f10d680a37",
+      "database_name": "ai-xiaomi-db"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
