@@ -41,19 +41,18 @@ export default {
         { status: 403, headers: { "Content-Type": "application/json" } }
       );
     }
-
-    // 1. Make.com API
+    
     if (request.method === "POST" && pathname === "/api/external/make/chat") {
       try {
         const body = await request.json();
+    
         const {
           lineId,
           userPrompt,
           source = "make",
-          sessionId = crypto.randomUUID(),
           metadata = {},
         } = body;
-
+    
         if (!lineId || !userPrompt) {
           return new Response(
             JSON.stringify({
@@ -63,65 +62,84 @@ export default {
             { status: 400, headers: { "Content-Type": "application/json" } }
           );
         }
-
-        // 1) 找 / 建 user
+    
+        // 1) 找/建 user
         const userId = await getOrCreateUser(env, lineId);
-
-        // 2) 寫入 user 對話（chat_logs）
-        await env.DB.prepare(
-          `INSERT INTO chat_logs
-             (user_id, session_id, direction, message_type, text_content, created_at)
-           VALUES (?1, ?2, 'user', 'text', ?3, datetime('now'))`
-        )
-          .bind(userId, sessionId, userPrompt)
-          .run();
-
-        // 3) 呼叫 OpenAI GPT-4.1 Mini
+    
+        // 2) 撈 36 小時內的歷史訊息
+        const historyRows = await env.DB.prepare(
+          `SELECT direction, text_content
+           FROM chat_logs
+           WHERE user_id = ?1
+             AND created_at >= datetime('now', '-36 hours')
+           ORDER BY id ASC`
+        ).bind(userId).all<{ direction: string; text_content: string }>();
+    
+        const historyMessages = (historyRows?.results ?? []).map((row) => ({
+          role: row.direction === "user" ? "user" : "assistant",
+          content: row.text_content,
+        }));
+    
+        // 3) 組 OpenAI messages
+        const messages = [
+          {
+            role: "system",
+            content:
+              "你是 AI 小咪，一位溫柔、療癒、正向的健康教練，擅長飲食、健康、情緒支持。回答語氣自然，不機械。",
+          },
+          ...historyMessages,
+          {
+            role: "user",
+            content: userPrompt,
+          },
+        ];
+    
+        // 4) GPT-4.1 mini 回覆
         const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+            Authorization: `Bearer ${env.OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
             model: "gpt-4.1-mini",
-            messages: [
-              {
-                role: "system",
-                content:
-                  "你是 AI 小咪，一位溫柔、療癒、正向的健康教練，擅長給飲食、健康、生活方式建議。語氣自然、貼心、不要太機器化。",
-              },
-              { role: "user", content: userPrompt },
-            ],
+            messages,
             max_tokens: 300,
-            temperature: 0.7
+            temperature: 0.7,
           }),
         });
-
+    
         const json = await openaiResponse.json();
-
+    
         if (!json.choices || !json.choices[0]) {
-          throw new Error("OpenAI 回傳格式不正確：" + JSON.stringify(json));
+          throw new Error("Invalid OpenAI response: " + JSON.stringify(json));
         }
-
+    
         const assistantReply = json.choices[0].message.content;
-
-        // 4) 寫入 bot 回覆
+    
+        // 5) 將 user/bot 回覆寫回 DB（session_id = NULL）
         await env.DB.prepare(
           `INSERT INTO chat_logs
-             (user_id, session_id, direction, message_type, text_content, created_at)
-           VALUES (?1, ?2, 'bot', 'text', ?3, datetime('now'))`
+            (user_id, session_id, direction, message_type, text_content, created_at)
+          VALUES (?1, NULL, 'user', 'text', ?2, datetime('now'))`
         )
-          .bind(userId, sessionId, assistantReply)
+          .bind(userId, userPrompt)
           .run();
-
-        // 5) 回傳給 Make.com
+    
+        await env.DB.prepare(
+          `INSERT INTO chat_logs
+            (user_id, session_id, direction, message_type, text_content, created_at)
+          VALUES (?1, NULL, 'bot', 'text', ?2, datetime('now'))`
+        )
+          .bind(userId, assistantReply)
+          .run();
+    
+        // 6) 回傳
         return new Response(
           JSON.stringify({
             success: true,
             replyText: assistantReply,
             replyId: crypto.randomUUID(),
-            sessionId,
             source,
             echo: { lineId, userPrompt, metadata },
           }),
@@ -129,15 +147,12 @@ export default {
         );
       } catch (err: any) {
         return new Response(
-          JSON.stringify({
-            success: false,
-            error: err.message ?? String(err),
-          }),
+          JSON.stringify({ success: false, error: err.message ?? String(err) }),
           { status: 500, headers: { "Content-Type": "application/json" } }
         );
       }
     }
-
+    
     // Default
     return new Response(
       JSON.stringify({
