@@ -56,7 +56,7 @@ CREATE TABLE eula_versions (
 );
 
 -- ========== EULA ACCEPTANCES ==========
-CREATE TABLE eula_acceptances (
+CREATE TABLE eula_consents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER,
   eula_version_id INTEGER,
