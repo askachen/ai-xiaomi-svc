@@ -160,7 +160,7 @@ export default {
                 version: latestEula.version,
                 url: latestEula.url,
               },
-              replyText: "嗨~ 歡迎使用 AI 小咪! 因為是第一次使用, 得先請您同意使用者條款喔! AI 小咪會保護好您的個人資料! 請放心! " + latestEula.url,
+              replyText: "嗨~ 歡迎使用 AI 小咪! 因為是第一次使用, 得先請您同意使用者條款喔! 小咪會保護好您的個人資料的, 請放心! " + latestEula.url,
               echo: { lineId, userPrompt, source, metadata },
             }),
             { headers: { "Content-Type": "application/json" } }
