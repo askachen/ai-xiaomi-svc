@@ -24,7 +24,7 @@ export async function chatWithClassification(
       body: JSON.stringify({
         model: "gpt-5-mini",
         messages,
-        max_tokens: 400,
+        max_completion_tokens: 400,
         temperature: 0.7,
         // JSON mode：回傳內容會是「合法 JSON 字串」
         response_format: { type: "json_object" },
@@ -167,7 +167,7 @@ JSON 欄位說明：
           ],
         } as any,
       ],
-      max_tokens: 400,
+      max_completion_tokens: 400,
       temperature: 0.4,
       response_format: { type: "json_object" }
     }),
