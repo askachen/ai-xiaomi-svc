@@ -238,20 +238,35 @@ export default {
         )
           .bind(userId, latestEula.id)
           .first();
-
+        
         const nowIso = new Date().toISOString();
-        const agreedAtValue = agreedAt || nowIso;
-
+        const acceptedAtValue = agreedAt || nowIso;
+        
+        // 從 header 抓一些環境資訊存進去（可當 audit 資料）
+        const ipAddress =
+          request.headers.get("CF-Connecting-IP") ||
+          request.headers.get("x-forwarded-for") ||
+          null;
+        const userAgent = request.headers.get("User-Agent") || null;
+        const channel = "liff"; // 你也可以用 "line_liff_eula" 之類更具體的字
+        
         if (!existing) {
           await env.DB.prepare(
             `INSERT INTO eula_consents
-               (user_id, eula_version_id, agreed_at, created_at)
-             VALUES (?1, ?2, ?3, ?4)`
+               (user_id, eula_version_id, accepted_at, channel, ip_address, user_agent)
+             VALUES (?1,       ?2,             ?3,          ?4,      ?5,         ?6)`
           )
-            .bind(userId, latestEula.id, agreedAtValue, nowIso)
+            .bind(
+              userId,
+              latestEula.id,
+              acceptedAtValue,
+              channel,
+              ipAddress,
+              userAgent
+            )
             .run();
         }
-
+        
         return new Response(
           JSON.stringify({
             success: true,
