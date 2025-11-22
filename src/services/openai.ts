@@ -26,14 +26,17 @@ export async function chatWithClassification(
         messages,
         max_tokens: 400,
         temperature: 0.7,
-        response_format: { type: "json_object" }
+        // JSON mode：回傳內容會是「合法 JSON 字串」
+        response_format: { type: "json_object" },
       }),
     }
   );
 
   const json = await openaiResponse.json();
 
-  if (!json.choices || !json.choices[0]) {
+  if (!json.choices || !json.choices[0] || !json.choices[0].message) {
+    // 建議這裡也 log 一下，方便 debug
+    console.error("OpenAI invalid response:", JSON.stringify(json));
     throw new Error("Invalid OpenAI response: " + JSON.stringify(json));
   }
 
@@ -41,14 +44,39 @@ export async function chatWithClassification(
   let category: ChatResult["category"] = "general";
 
   try {
-    const parsed = json.choices[0].message.content;
+    let content = json.choices[0].message.content;
+
+    // JSON mode：這裡通常是「字串」，但我們防守一下各種情況
+    let contentStr: string;
+    if (typeof content === "string") {
+      contentStr = content;
+    } else if (Array.isArray(content)) {
+      // 有些實作會回傳 content parts 陣列（保險處理）
+      contentStr = content
+        .map((p: any) => p?.text?.value ?? p?.text ?? p?.content ?? "")
+        .join("");
+    } else {
+      contentStr = String(content ?? "");
+    }
+
+    // 真的 parse JSON
+    const parsed = JSON.parse(contentStr);
+
     reply = parsed.reply ?? "";
     category = parsed.category ?? "general";
 
     if (!VALID_CATEGORIES.includes(category)) {
       category = "general";
     }
-  } catch {
+
+    // 如果 reply 竟然是空字串，就直接拿原始 contentStr 當回覆，至少不要是「忙碌」那句
+    if (!reply || typeof reply !== "string" || reply.trim().length === 0) {
+      reply = contentStr || "小咪在想該怎麼回你，先讓我整理一下思緒～";
+    }
+  } catch (err) {
+    console.error("chatWithClassification parse error:", err);
+    // 這裡我會建議改成「直接把原始 content 回給使用者」而不是硬塞忙碌訊息
+    // 但如果你想保留原本邏輯，也可以
     reply = "小咪這邊有點忙碌，等等再和你聊聊好嗎？";
     category = "general";
   }
