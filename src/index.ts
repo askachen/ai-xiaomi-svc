@@ -1,4 +1,4 @@
-// index.ts v4 - AI 小咪後端 + EULA 檢查
+// index.ts v5 - AI 小咪後端 + EULA 檢查 + EULA 同意 API
 
 // 小工具：找或建立 user
 async function getOrCreateUser(env: any, lineId: string): Promise<number> {
@@ -37,7 +37,7 @@ async function getOrCreateUser(env: any, lineId: string): Promise<number> {
   return (created as any).id as number;
 }
 
-// ==================== 新增：EULA 相關小工具 ====================
+// ==================== EULA 相關小工具 ====================
 
 // 取得目前最新一版 EULA（沒有的話回傳 null）
 async function getLatestEula(env: any): Promise<{
@@ -100,17 +100,118 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
-    // 0. API Key 驗證
-    const apiKey = request.headers.get("x-api-key");
-    if (!apiKey || apiKey !== env.API_KEY) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized" }),
-        { status: 403, headers: { "Content-Type": "application/json" } }
-      );
+    // =========================================================
+    // 1) LIFF EULA 同意 API（給前端 index.html 呼叫）
+    // =========================================================
+    if (
+      request.method === "POST" &&
+      pathname === "/api/external/line/eula/consent"
+    ) {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const {
+          agreed,
+          eulaVersion, // 目前前端送 "V2"，這裡以 DB 最新版為主
+          agreedAt,
+          lineUserId,
+          displayName,
+          liffContext,
+        } = body as any;
+
+        if (!lineUserId) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: "Missing lineUserId",
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // 沒同意就不寫入，只回應一聲
+        if (!agreed) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              agreed: false,
+              message: "User declined EULA.",
+            }),
+            { headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // 找 / 建 user
+        const userId = await getOrCreateUser(env, lineUserId);
+
+        // 取得最新 EULA
+        const latestEula = await getLatestEula(env);
+        if (!latestEula) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: "No EULA version configured.",
+            }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // 檢查是否已經同意過這個版本
+        const existing = await env.DB.prepare(
+          `SELECT id
+             FROM eula_consents
+            WHERE user_id = ?1
+              AND eula_version_id = ?2
+            LIMIT 1`
+        )
+          .bind(userId, latestEula.id)
+          .first();
+
+        const nowIso = new Date().toISOString();
+        const agreedAtValue = agreedAt || nowIso;
+
+        if (!existing) {
+          await env.DB.prepare(
+            `INSERT INTO eula_consents
+               (user_id, eula_version_id, agreed_at, created_at)
+             VALUES (?1, ?2, ?3, ?4)`
+          )
+            .bind(userId, latestEula.id, agreedAtValue, nowIso)
+            .run();
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            agreed: true,
+            alreadyAgreed: !!existing,
+            eulaVersion: latestEula.version,
+          }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      } catch (err: any) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: err?.message ?? String(err),
+          }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
     }
 
-    // 1. Make.com 專用 API
+    // =========================================================
+    // 2) Make.com 專用聊天 API（需要 x-api-key）
+    // =========================================================
     if (request.method === "POST" && pathname === "/api/external/make/chat") {
+      // 只對 server-to-server 這支做 API Key 驗證
+      const apiKey = request.headers.get("x-api-key");
+      if (!apiKey || apiKey !== env.API_KEY) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Unauthorized" }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       try {
         const body = await request.json();
         const {
@@ -143,14 +244,14 @@ export default {
         // 1) 找 / 建 user
         const userId = await getOrCreateUser(env, lineId);
 
-        // 1.5) 檢查是否已同意最新 EULA ---------------
+        // 1.5) 檢查是否已同意最新 EULA
         const { agreed, latestEula } = await hasUserAgreedLatestEula(
           env,
           userId
         );
 
         if (!agreed && latestEula) {
-          // 還沒同意最新 EULA，先請前端 / Make.com 引導去 EULA LIFF
+          // 還沒同意最新 EULA，請前端 / Make.com 引導去 EULA LIFF
           return new Response(
             JSON.stringify({
               success: true,
@@ -160,13 +261,14 @@ export default {
                 version: latestEula.version,
                 url: latestEula.url,
               },
-              replyText: "嗨~ 歡迎使用 AI 小咪! 因為是第一次使用, 得先請您同意使用者條款喔! 小咪會保護好您的個人資料的, 請放心! " + latestEula.url,
+              replyText:
+                "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
+                latestEula.url,
               echo: { lineId, userPrompt, source, metadata },
             }),
             { headers: { "Content-Type": "application/json" } }
           );
         }
-        // ------------------------------------------------
 
         // 2) 撈出該 user「過去 36 小時」所有對話當作歷史
         const historyResult = await env.DB.prepare(
@@ -311,11 +413,12 @@ intent_category 只能是以下四個英文字其中之一：
       }
     }
 
-    // Default 根路徑：健康檢查用
+    // 3) Default 根路徑：健康檢查用
     return new Response(
       JSON.stringify({
         success: true,
-        message: "AI小咪後端運作正常（v4：EULA 檢查 + 多輪對談 + 分類）",
+        message:
+          "AI小咪後端運作正常（v5：EULA 檢查 + LIFF 同意 API + 多輪對談 + 分類）",
       }),
       { headers: { "content-type": "application/json" } }
     );
