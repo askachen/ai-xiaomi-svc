@@ -232,3 +232,13 @@ CREATE TABLE issue_reports (
   admin_note TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
+
+-- ========== ERROR LOGS ==========
+CREATE TABLE IF NOT EXISTS error_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT,
+  message TEXT,
+  stack TEXT,
+  payload TEXT,
+  created_at TEXT
+);
