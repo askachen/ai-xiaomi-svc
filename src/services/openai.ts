@@ -22,7 +22,7 @@ export async function chatWithClassification(
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-5-mini",
+        model: "gpt-4.1-mini",
         messages,
         max_tokens: 400,
         temperature: 0.7,
