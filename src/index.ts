@@ -160,8 +160,7 @@ export default {
                 version: latestEula.version,
                 url: latestEula.url,
               },
-              message:
-                "User has not agreed to the latest EULA. Please redirect to EULA page.",
+              replyText: latestEula.url,
               echo: { lineId, userPrompt, source, metadata },
             }),
             { headers: { "Content-Type": "application/json" } }
