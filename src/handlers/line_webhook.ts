@@ -169,7 +169,21 @@ async function handleImageMessage(
   lineUserId: string
 ) {
   const messageId: string | undefined = event.message?.id;
-  if (!messageId) return;
+  if (!messageId) {
+    // 這裡一定要記 log，不然永遠不知道發生什麼事
+    await logErrorToDb(env, "line_webhook_image_no_message_id", { event });
+
+    try {
+      await replyTextMessage(
+        env,
+        replyToken,
+        "小咪有收到一張圖片，但沒辦法取得內容 QQ\n可能是測試事件或特殊來源的圖片，之後再試一次好嗎？"
+      );
+    } catch {
+      // ignore
+    }
+    return;
+  }
 
   try {
     const userId = await getOrCreateUser(env, lineUserId);
