@@ -12,7 +12,7 @@ const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
 
 // 文字聊天用：gpt-5-mini（便宜＋快）
 // 注意：gpt-5-mini 不支援 max_tokens / temperature，所以我們只用 max_completion_tokens。
-const CHAT_MODEL = "gpt-5-mini";
+const CHAT_MODEL = "gpt-4.1-mini";
 
 // 圖片分析用：用 4.x 支援 vision 的模型會比較安全（5-mini 未必有 vision）
 // 你之後如果確認 5 系列支援 vision，再改這個常數就好。
@@ -77,8 +77,8 @@ export async function chatWithClassification(
       model: CHAT_MODEL,
       messages,
       // gpt-5-mini：要用 max_completion_tokens，不能用 max_tokens
-      max_completion_tokens: 400,
-      // gpt-5-mini：不支援 temperature → 直接用預設值（1）
+      max_tokens: 400,
+      temperature: 0.7,
       response_format: { type: "json_object" }, // 強制回傳合法 JSON 字串
     }),
   });
