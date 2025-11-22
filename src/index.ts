@@ -1,10 +1,4 @@
-// index.ts v3 - AI 小咪後端
-// 需求：
-// - x-api-key 驗證
-// - 使用 D1 (env.DB)
-// - 多輪對話：過去 36 小時的歷史
-// - 呼叫 OpenAI gpt-4.1-mini，一次拿到 reply + category
-// - 寫入 users / chat_logs
+// index.ts v4 - AI 小咪後端 + EULA 檢查
 
 // 小工具：找或建立 user
 async function getOrCreateUser(env: any, lineId: string): Promise<number> {
@@ -42,6 +36,64 @@ async function getOrCreateUser(env: any, lineId: string): Promise<number> {
 
   return (created as any).id as number;
 }
+
+// ==================== 新增：EULA 相關小工具 ====================
+
+// 取得目前最新一版 EULA（沒有的話回傳 null）
+async function getLatestEula(env: any): Promise<{
+  id: number;
+  version: string;
+  url: string;
+} | null> {
+  const row = await env.DB.prepare(
+    `SELECT id, version, url
+     FROM eula_versions
+     ORDER BY
+       COALESCE(effective_from, created_at) DESC,
+       id DESC
+     LIMIT 1`
+  ).first();
+
+  if (!row) return null;
+
+  return {
+    id: (row as any).id as number,
+    version: (row as any).version as string,
+    url: (row as any).url as string,
+  };
+}
+
+// 檢查使用者是否已同意最新版本的 EULA
+async function hasUserAgreedLatestEula(
+  env: any,
+  userId: number
+): Promise<{
+  agreed: boolean;
+  latestEula: { id: number; version: string; url: string } | null;
+}> {
+  const latestEula = await getLatestEula(env);
+  if (!latestEula) {
+    // 系統尚未設定任何 EULA，視為不檢查
+    return { agreed: true, latestEula: null };
+  }
+
+  const consent = await env.DB.prepare(
+    `SELECT 1
+       FROM eula_consents
+      WHERE user_id = ?1
+        AND eula_version_id = ?2
+      LIMIT 1`
+  )
+    .bind(userId, latestEula.id)
+    .first();
+
+  return {
+    agreed: !!consent,
+    latestEula,
+  };
+}
+
+// =============================================================
 
 export default {
   async fetch(request, env, ctx) {
@@ -90,6 +142,32 @@ export default {
 
         // 1) 找 / 建 user
         const userId = await getOrCreateUser(env, lineId);
+
+        // 1.5) 檢查是否已同意最新 EULA ---------------
+        const { agreed, latestEula } = await hasUserAgreedLatestEula(
+          env,
+          userId
+        );
+
+        if (!agreed && latestEula) {
+          // 還沒同意最新 EULA，先請前端 / Make.com 引導去 EULA LIFF
+          return new Response(
+            JSON.stringify({
+              success: true,
+              needEulaConsent: true,
+              eula: {
+                id: latestEula.id,
+                version: latestEula.version,
+                url: latestEula.url,
+              },
+              message:
+                "User has not agreed to the latest EULA. Please redirect to EULA page.",
+              echo: { lineId, userPrompt, source, metadata },
+            }),
+            { headers: { "Content-Type": "application/json" } }
+          );
+        }
+        // ------------------------------------------------
 
         // 2) 撈出該 user「過去 36 小時」所有對話當作歷史
         const historyResult = await env.DB.prepare(
@@ -238,7 +316,7 @@ intent_category 只能是以下四個英文字其中之一：
     return new Response(
       JSON.stringify({
         success: true,
-        message: "AI小咪後端運作正常（v3，多輪對談 + 分類啟用）",
+        message: "AI小咪後端運作正常（v4：EULA 檢查 + 多輪對談 + 分類）",
       }),
       { headers: { "content-type": "application/json" } }
     );
