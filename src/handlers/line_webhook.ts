@@ -1,8 +1,10 @@
 // src/handlers/line_webhook.ts
 import { getOrCreateUser, logErrorToDb } from "../services/db";
 import { hasUserAgreedLatestEula } from "../services/eula";
-import { chatWithClassification } from "../services/openai";
+import { chatWithClassification, analyzeMealFromImage } from "../services/openai";
 import { replyTextMessage } from "../services/line";
+
+const LINE_CONTENT_ENDPOINT = "https://api-data.line.me/v2/bot/message";
 
 export async function handleLineWebhook(
   request: Request,
@@ -18,61 +20,81 @@ export async function handleLineWebhook(
 
   const events: any[] = body.events ?? [];
 
-  // 逐一處理每個 event（通常一次只會一個）
   for (const event of events) {
-    if (event.type !== "message" || event.message?.type !== "text") {
-      // 目前只處理純文字訊息，其它先忽略
+    if (event.type !== "message") {
       continue;
     }
 
+    const msgType = event.message?.type;
     const replyToken: string = event.replyToken;
     const lineUserId: string | undefined = event.source?.userId;
-    const userPrompt: string = event.message?.text ?? "";
 
-    if (!replyToken || !lineUserId || !userPrompt) {
+    if (!replyToken || !lineUserId) {
       continue;
     }
 
-    try {
-      // 1) 找 / 建 user
-      const userId = await getOrCreateUser(env, lineUserId);
-
-      // 2) 檢查是否已同意最新 EULA
-      const { agreed, latestEula } = await hasUserAgreedLatestEula(env, userId);
-
-      if (!agreed && latestEula) {
-        const eulaText =
-          "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
-          latestEula.url;
-
-        await replyTextMessage(env, replyToken, eulaText);
-        // 不再往下走聊天流程
-        continue;
+    if (msgType === "text") {
+      await handleTextMessage(event, env, replyToken, lineUserId);
+    } else if (msgType === "image") {
+      await handleImageMessage(event, env, replyToken, lineUserId);
+    } else {
+      // 其他類型暫時回一個說明
+      try {
+        await replyTextMessage(env, replyToken, "小咪現在先專心處理文字跟餐點照片喔～其他類型的訊息之後會慢慢學會 💪");
+      } catch {
+        // ignore
       }
+    }
+  }
 
-      // 3) 撈出該 user「過去 36 小時」所有對話當作歷史
-      const historyResult = await env.DB.prepare(
-        `SELECT direction, text_content
-         FROM chat_logs
-         WHERE user_id = ?1
-           AND created_at >= datetime('now', '-36 hours')
-         ORDER BY id ASC`
-      )
-        .bind(userId)
-        .all();
+  return new Response("OK");
+}
 
-      const historyRows = (historyResult as any).results ?? [];
+async function handleTextMessage(
+  event: any,
+  env: any,
+  replyToken: string,
+  lineUserId: string
+) {
+  const userPrompt: string = event.message?.text ?? "";
 
-      const historyMessages = historyRows.map((row: any) => ({
-        role: row.direction === "user" ? "user" : "assistant",
-        content: row.text_content as string,
-      }));
+  if (!userPrompt) return;
 
-      // 4) 組 OpenAI messages（沿用原本 system prompt）
-      const messages = [
-        {
-          role: "system",
-          content: `
+  try {
+    const userId = await getOrCreateUser(env, lineUserId);
+
+    // EULA 檢查
+    const { agreed, latestEula } = await hasUserAgreedLatestEula(env, userId);
+    if (!agreed && latestEula) {
+      const eulaText =
+        "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
+        latestEula.url;
+      await replyTextMessage(env, replyToken, eulaText);
+      return;
+    }
+
+    // 撈歷史
+    const historyResult = await env.DB.prepare(
+      `SELECT direction, text_content
+       FROM chat_logs
+       WHERE user_id = ?1
+         AND created_at >= datetime('now', '-36 hours')
+       ORDER BY id ASC`
+    )
+      .bind(userId)
+      .all();
+
+    const historyRows = (historyResult as any).results ?? [];
+
+    const historyMessages = historyRows.map((row: any) => ({
+      role: row.direction === "user" ? "user" : "assistant",
+      content: row.text_content as string,
+    }));
+
+    const messages = [
+      {
+        role: "system",
+        content: `
 你是「AI 小咪」，一位溫柔、療癒、正向的健康教練，
 擅長幫助使用者在飲食、減重、健康習慣和情緒上做調整。
 你會：
@@ -95,55 +117,189 @@ intent_category 只能是以下四個英文字其中之一：
 }
 
 不要加註解、不要多一句話，只能是 JSON。
-        `.trim(),
-        },
-        ...historyMessages,
-        {
-          role: "user",
-          content: userPrompt,
-        },
-      ];
+      `.trim(),
+      },
+      ...historyMessages,
+      {
+        role: "user",
+        content: userPrompt,
+      },
+    ];
 
-      // 5) 呼叫 OpenAI，一次拿分類 + 回覆
-      const { reply: assistantReply, category: intentCategory } =
-        await chatWithClassification(env, messages);
+    const { reply: assistantReply, category: intentCategory } =
+      await chatWithClassification(env, messages);
 
-      // 6) 寫入 user 訊息
-      await env.DB.prepare(
-        `INSERT INTO chat_logs
-          (user_id, session_id, direction, message_type, text_content, created_at, intent_category)
-         VALUES (?1, NULL, 'user', 'text', ?2, datetime('now'), ?3)`
-      )
-        .bind(userId, userPrompt, intentCategory)
-        .run();
+    // 寫入 user 訊息
+    await env.DB.prepare(
+      `INSERT INTO chat_logs
+        (user_id, session_id, direction, message_type, text_content, created_at, intent_category)
+       VALUES (?1, NULL, 'user', 'text', ?2, datetime('now'), ?3)`
+    )
+      .bind(userId, userPrompt, intentCategory)
+      .run();
 
-      // 7) 寫入 bot 回覆
-      await env.DB.prepare(
-        `INSERT INTO chat_logs
-          (user_id, session_id, direction, message_type, text_content, created_at, intent_category)
-         VALUES (?1, NULL, 'bot', 'text', ?2, datetime('now'), NULL)`
-      )
-        .bind(userId, assistantReply)
-        .run();
+    // 寫入 bot 回覆
+    await env.DB.prepare(
+      `INSERT INTO chat_logs
+        (user_id, session_id, direction, message_type, text_content, created_at, intent_category)
+       VALUES (?1, NULL, 'bot', 'text', ?2, datetime('now'), NULL)`
+    )
+      .bind(userId, assistantReply)
+      .run();
 
-      // 8) 回 LINE
-      await replyTextMessage(env, replyToken, assistantReply);
-    } catch (err) {
-      // 錯誤記錄 + 嘗試回一個安全訊息
-      await logErrorToDb(env, "line_webhook", err, { event });
-
-      try {
-        await replyTextMessage(
-          env,
-          replyToken,
-          "小咪這邊有點忙碌，等等再和你聊聊好嗎？"
-        );
-      } catch {
-        // 就算這裡再錯，也不要讓整個 webhook 爆掉
-      }
+    await replyTextMessage(env, replyToken, assistantReply);
+  } catch (err) {
+    await logErrorToDb(env, "line_webhook_text", err, { event });
+    try {
+      await replyTextMessage(
+        env,
+        replyToken,
+        "小咪這邊有點忙碌，等等再和你聊聊好嗎？"
+      );
+    } catch {
+      // ignore
     }
   }
+}
 
-  // LINE 只需要 200 OK
-  return new Response("OK");
+async function handleImageMessage(
+  event: any,
+  env: any,
+  replyToken: string,
+  lineUserId: string
+) {
+  const messageId: string | undefined = event.message?.id;
+  if (!messageId) return;
+
+  try {
+    const userId = await getOrCreateUser(env, lineUserId);
+
+    // EULA 檢查
+    const { agreed, latestEula } = await hasUserAgreedLatestEula(env, userId);
+    if (!agreed && latestEula) {
+      const eulaText =
+        "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
+        latestEula.url;
+      await replyTextMessage(env, replyToken, eulaText);
+      return;
+    }
+
+    // 1) 跟 LINE 拿圖片內容
+    if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
+      throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
+    }
+
+    const imgRes = await fetch(
+      `${LINE_CONTENT_ENDPOINT}/${messageId}/content`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+      }
+    );
+
+    if (!imgRes.ok) {
+      const t = await imgRes.text().catch(() => "");
+      throw new Error(`LINE content fetch failed ${imgRes.status}: ${t}`);
+    }
+
+    const imageBuffer = await imgRes.arrayBuffer();
+
+    // 2) 丟給 OpenAI 做飲食分析
+    const analysis = await analyzeMealFromImage(env, imageBuffer);
+
+    const nowIso = new Date().toISOString();
+
+    // 3) 寫入 meal_logs
+    await env.DB.prepare(
+      `INSERT INTO meal_logs
+        (user_id, eaten_at, meal_type, food_name, description,
+         carb_g, sugar_g, protein_g, fat_g,
+         veggies_servings, fruits_servings, calories_kcal,
+         photo_url, source, metadata, created_at, updated_at)
+       VALUES
+        (?1, ?2, ?3, ?4, ?5,
+         ?6, ?7, ?8, ?9,
+         ?10, ?11, ?12,
+         ?13, ?14, ?15, ?16, ?17)`
+    )
+      .bind(
+        userId,
+        nowIso,                      // eaten_at 先用現在時間
+        analysis.meal_type || null,
+        analysis.food_name || null,
+        analysis.description || null,
+        analysis.carb_g,
+        analysis.sugar_g,
+        analysis.protein_g,
+        analysis.fat_g,
+        analysis.veggies_servings,
+        analysis.fruits_servings,
+        analysis.calories_kcal,
+        null,                        // photo_url：未來若有 R2 可改存實體 URL
+        "line_image",                // source
+        JSON.stringify(analysis.raw_json ?? {}),
+        nowIso,
+        nowIso
+      )
+      .run();
+
+    // 4) 回覆使用者
+    const lines: string[] = [];
+
+    if (analysis.food_name) {
+      lines.push(`看起來這餐主要是：「${analysis.food_name}」`);
+    } else {
+      lines.push("小咪大概看得出來這是一餐吃的東西～");
+    }
+
+    if (analysis.calories_kcal != null) {
+      lines.push(`估計熱量大約在 **${Math.round(analysis.calories_kcal)} 大卡** 左右。`);
+    }
+
+    const macros: string[] = [];
+    if (analysis.protein_g != null) macros.push(`蛋白質約 ${Math.round(analysis.protein_g)}g`);
+    if (analysis.carb_g != null) macros.push(`碳水約 ${Math.round(analysis.carb_g)}g`);
+    if (analysis.fat_g != null) macros.push(`脂肪約 ${Math.round(analysis.fat_g)}g`);
+
+    if (macros.length > 0) {
+      lines.push(macros.join("、"));
+    }
+
+    if (analysis.veggies_servings != null || analysis.fruits_servings != null) {
+      const vf: string[] = [];
+      if (analysis.veggies_servings != null) {
+        vf.push(`蔬菜約 ${analysis.veggies_servings} 份`);
+      }
+      if (analysis.fruits_servings != null) {
+        vf.push(`水果約 ${analysis.fruits_servings} 份`);
+      }
+      if (vf.length > 0) {
+        lines.push(vf.join("、"));
+      }
+    }
+
+    lines.push("");
+    lines.push("如果你有在控制體重，小咪建議：");
+    lines.push("- 慢慢吃、細嚼，給身體一點時間感受飽足感");
+    lines.push("- 下一餐可以多補一點蔬菜、少一點油炸或含糖飲料");
+    lines.push("之後你也可以跟小咪說「幫我看今天吃得怎樣」，小咪會幫你做一天的總結喔 🌱");
+
+    const replyText = lines.join("\n");
+
+    await replyTextMessage(env, replyToken, replyText);
+  } catch (err) {
+    await logErrorToDb(env, "line_webhook_image", err, { event });
+
+    try {
+      await replyTextMessage(
+        env,
+        replyToken,
+        "小咪剛剛在看這張照片的時候遇到一點小問題 QQ\n可以先用文字跟小咪說你吃了什麼，小咪一樣可以幫你估熱量喔！"
+      );
+    } catch {
+      // ignore
+    }
+  }
 }
