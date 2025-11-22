@@ -1,6 +1,7 @@
 // src/router.ts
 import { handleEulaConsent } from "./handlers/eula";
 import { handleMakeChat } from "./handlers/make_chat";
+import { handleLineWebhook } from "./handlers/line_webhook";
 import { EULA_CORS_HEADERS } from "./utils/cors";
 
 export async function handleRequest(
@@ -20,22 +21,27 @@ export async function handleRequest(
     });
   }
 
-  // 1) LIFF EULA 同意 API（給前端 index.html 呼叫，不驗 x-api-key）
+  // 1) LIFF EULA 同意 API
   if (method === "POST" && pathname === "/api/external/line/eula/consent") {
     return handleEulaConsent(request, env, ctx);
   }
 
-  // 2) Make.com 專用聊天 API（需要 x-api-key）
+  // 2) LINE Webhook（從 LINE Developer 後台指到這個 URL）
+  if (method === "POST" && pathname === "/webhook/line") {
+    return handleLineWebhook(request, env, ctx);
+  }
+
+  // 3)（可選）Make.com 專用聊天 API – 確認 LINE Webhook OK 後可以刪掉這一段
   if (method === "POST" && pathname === "/api/external/make/chat") {
     return handleMakeChat(request, env, ctx);
   }
 
-  // 3) Default 根路徑：健康檢查用
+  // 4) Default 根路徑：健康檢查用
   return new Response(
     JSON.stringify({
       success: true,
       message:
-        "AI小咪後端運作正常（v6：EULA 檢查 + LIFF 同意 API + CORS + 多輪對談 + 分類）",
+        "AI小咪後端運作正常（v6：EULA 檢查 + LIFF 同意 API + CORS + 多輪對談 + 分類 + LINE Webhook）",
     }),
     { headers: { "content-type": "application/json" } }
   );
