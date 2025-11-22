@@ -1,9 +1,63 @@
+// src/services/openai.ts
+// 統一管理所有跟 OpenAI 有關的東西：
+// - chatWithClassification：文字聊天 + 意圖分類（使用 gpt-5-mini + JSON mode）
+// - analyzeMealFromImage：圖片 → 飲食分析（使用 gpt-4.1-mini + JSON mode）
+
 export type ChatResult = {
   reply: string;
   category: "diet" | "emotion" | "health" | "general";
 };
 
 const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
+
+// 文字聊天用：gpt-5-mini（便宜＋快）
+// 注意：gpt-5-mini 不支援 max_tokens / temperature，所以我們只用 max_completion_tokens。
+const CHAT_MODEL = "gpt-5-mini";
+
+// 圖片分析用：用 4.x 支援 vision 的模型會比較安全（5-mini 未必有 vision）
+// 你之後如果確認 5 系列支援 vision，再改這個常數就好。
+const VISION_MODEL = "gpt-4.1-mini";
+
+// ======================== 共用小工具 ========================
+
+function ensureStringContent(content: any): string {
+  // OpenAI 在 JSON mode 下通常會回傳 content 是「字串形式的 JSON」
+  if (typeof content === "string") {
+    return content;
+  }
+  // 如果是 array 結構（某些情況會回 content parts），我們把它串起來
+  if (Array.isArray(content)) {
+    return content
+      .map((p: any) => {
+        if (typeof p === "string") return p;
+        if (typeof p?.text === "string") return p.text;
+        if (typeof p?.content === "string") return p.content;
+        return "";
+      })
+      .join("");
+  }
+  if (content == null) return "";
+  return String(content);
+}
+
+function safeNumber(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Cloudflare Workers 環境有 btoa，可以直接用
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// ======================== 1) 文字聊天 + 分類 ========================
 
 export async function chatWithClassification(
   env: any,
@@ -13,30 +67,26 @@ export async function chatWithClassification(
     throw new Error("OPENAI_API_KEY is not configured");
   }
 
-  const openaiResponse = await fetch(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-5-mini",
-        messages,
-        max_completion_tokens: 400,
-        //temperature: 0.7,
-        // JSON mode：回傳內容會是「合法 JSON 字串」
-        response_format: { type: "json_object" },
-      }),
-    }
-  );
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      messages,
+      // gpt-5-mini：要用 max_completion_tokens，不能用 max_tokens
+      max_completion_tokens: 400,
+      // gpt-5-mini：不支援 temperature → 直接用預設值（1）
+      response_format: { type: "json_object" }, // 強制回傳合法 JSON 字串
+    }),
+  });
 
-  const json = await openaiResponse.json();
+  const json = await res.json();
 
   if (!json.choices || !json.choices[0] || !json.choices[0].message) {
-    // 建議這裡也 log 一下，方便 debug
-    console.error("OpenAI invalid response:", JSON.stringify(json));
+    console.error("OpenAI invalid response for chat:", JSON.stringify(json));
     throw new Error("Invalid OpenAI response: " + JSON.stringify(json));
   }
 
@@ -44,22 +94,11 @@ export async function chatWithClassification(
   let category: ChatResult["category"] = "general";
 
   try {
-    let content = json.choices[0].message.content;
+    const contentRaw = json.choices[0].message.content;
+    const contentStr = ensureStringContent(contentRaw);
 
-    // JSON mode：這裡通常是「字串」，但我們防守一下各種情況
-    let contentStr: string;
-    if (typeof content === "string") {
-      contentStr = content;
-    } else if (Array.isArray(content)) {
-      // 有些實作會回傳 content parts 陣列（保險處理）
-      contentStr = content
-        .map((p: any) => p?.text?.value ?? p?.text ?? p?.content ?? "")
-        .join("");
-    } else {
-      contentStr = String(content ?? "");
-    }
-
-    // 真的 parse JSON
+    // JSON mode：contentStr 會是類似：
+    // {"reply": "...", "category": "diet"}
     const parsed = JSON.parse(contentStr);
 
     reply = parsed.reply ?? "";
@@ -69,14 +108,13 @@ export async function chatWithClassification(
       category = "general";
     }
 
-    // 如果 reply 竟然是空字串，就直接拿原始 contentStr 當回覆，至少不要是「忙碌」那句
     if (!reply || typeof reply !== "string" || reply.trim().length === 0) {
-      reply = contentStr || "小咪在想該怎麼回你，先讓我整理一下思緒～";
+      reply =
+        contentStr ||
+        "小咪在想該怎麼回你，先讓我整理一下思緒～";
     }
   } catch (err) {
     console.error("chatWithClassification parse error:", err);
-    // 這裡我會建議改成「直接把原始 content 回給使用者」而不是硬塞忙碌訊息
-    // 但如果你想保留原本邏輯，也可以
     reply = "小咪這邊有點忙碌，等等再和你聊聊好嗎？";
     category = "general";
   }
@@ -84,12 +122,12 @@ export async function chatWithClassification(
   return { reply, category };
 }
 
-// src/services/openai.ts
+// ======================== 2) 圖片 → 飲食分析 ========================
 
 export type MealAnalysisResult = {
-  meal_type: string;          // breakfast / lunch / dinner / snack …（英文或中文都可以）
-  food_name: string;          // 主餐名，如「牛肉麵」
-  description: string;        // 比較完整的說明
+  meal_type: string;
+  food_name: string;
+  description: string;
   carb_g: number | null;
   sugar_g: number | null;
   protein_g: number | null;
@@ -97,20 +135,13 @@ export type MealAnalysisResult = {
   veggies_servings: number | null;
   fruits_servings: number | null;
   calories_kcal: number | null;
-  raw_json: any;              // 原始 JSON 結果，方便存 metadata
+  raw_json: any;
 };
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  // btoa 在 Workers 環境是可用的
-  return btoa(binary);
-}
-
+/**
+ * 將 LINE 傳來的 image buffer 丟給 OpenAI 做飲食判讀 + 營養估算
+ * 回傳結構化結果，方便直接寫入 meal_logs。
+ */
 export async function analyzeMealFromImage(
   env: any,
   imageBuffer: ArrayBuffer
@@ -152,7 +183,7 @@ JSON 欄位說明：
       Authorization: `Bearer ${env.OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-5-mini",
+      model: VISION_MODEL,
       messages: [
         {
           role: "user",
@@ -168,36 +199,39 @@ JSON 欄位說明：
         } as any,
       ],
       max_completion_tokens: 400,
-      //temperature: 0.4,
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      // 這裡不設定 temperature，讓模型自行決定（也避免未來參數限制問題）
     }),
   });
 
   const json = await res.json();
-  if (!json.choices?.[0]?.message?.content) {
+
+  if (!json.choices || !json.choices[0] || !json.choices[0].message) {
+    console.error("OpenAI invalid response for meal image:", JSON.stringify(json));
     throw new Error("Invalid OpenAI image response: " + JSON.stringify(json));
   }
-  
-  const parsed = json.choices[0].message.content;
 
-  const num = (v: any): number | null => {
-    if (v === null || v === undefined) return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
+  const contentStr = ensureStringContent(json.choices[0].message.content);
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(contentStr);
+  } catch (e) {
+    console.error("analyzeMealFromImage parse error:", e, "content:", contentStr);
+    throw new Error("Failed to parse meal JSON: " + contentStr);
+  }
 
   return {
     meal_type: parsed.meal_type ?? "",
     food_name: parsed.food_name ?? "",
     description: parsed.description ?? "",
-    carb_g: num(parsed.carb_g),
-    sugar_g: num(parsed.sugar_g),
-    protein_g: num(parsed.protein_g),
-    fat_g: num(parsed.fat_g),
-    veggies_servings: num(parsed.veggies_servings),
-    fruits_servings: num(parsed.fruits_servings),
-    calories_kcal: num(parsed.calories_kcal),
+    carb_g: safeNumber(parsed.carb_g),
+    sugar_g: safeNumber(parsed.sugar_g),
+    protein_g: safeNumber(parsed.protein_g),
+    fat_g: safeNumber(parsed.fat_g),
+    veggies_servings: safeNumber(parsed.veggies_servings),
+    fruits_servings: safeNumber(parsed.fruits_servings),
+    calories_kcal: safeNumber(parsed.calories_kcal),
     raw_json: parsed,
   };
 }
-
