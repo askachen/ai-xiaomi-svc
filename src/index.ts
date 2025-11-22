@@ -37,6 +37,41 @@ async function getOrCreateUser(env: any, lineId: string): Promise<number> {
   return (created as any).id as number;
 }
 
+async function logErrorToDb(
+  env: any,
+  source: string,
+  error: unknown,
+  payload?: any
+): Promise<void> {
+  try {
+    const err = error as any;
+    const message =
+      typeof err?.message === "string"
+        ? err.message
+        : typeof error === "string"
+        ? error
+        : JSON.stringify(error);
+    const stack =
+      typeof err?.stack === "string" ? err.stack : undefined;
+    const payloadJson =
+      payload !== undefined ? JSON.stringify(payload) : null;
+    const nowIso = new Date().toISOString();
+
+    await env.DB.prepare(
+      `INSERT INTO error_logs (source, message, stack, payload, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`
+    )
+      .bind(source, message, stack, payloadJson, nowIso)
+      .run();
+
+    // 順便打到 Cloudflare Logs
+    console.error("[ERROR]", source, message);
+  } catch (logErr) {
+    // logging 本身也不能讓整個 worker 爆掉，所以要吃掉
+    console.error("[ERROR][logErrorToDb failed]", logErr);
+  }
+}
+
 // ==================== EULA 相關小工具 ====================
 
 // 取得目前最新一版 EULA（沒有的話回傳 null）
@@ -232,6 +267,14 @@ export default {
           }
         );
       } catch (err: any) {
+        // ✅ 寫入 D1 + console.error
+        await logErrorToDb(env, "eula_consent", err, {
+          path: pathname,
+          method,
+          // 小心不要存太多個資，這裡只放 lineUserId 就好
+          // body 若很大也不建議全塞
+        });
+    
         return new Response(
           JSON.stringify({
             success: false,
@@ -452,6 +495,11 @@ intent_category 只能是以下四個英文字其中之一：
           { headers: { "Content-Type": "application/json" } }
         );
       } catch (err: any) {
+        await logErrorToDb(env, "make_chat", err, {
+          path: pathname,
+          method,
+        });
+      
         return new Response(
           JSON.stringify({
             success: false,
