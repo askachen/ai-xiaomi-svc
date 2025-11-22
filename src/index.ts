@@ -1,4 +1,4 @@
-// index.ts v5 - AI 小咪後端 + EULA 檢查 + EULA 同意 API
+// index.ts v6 - AI 小咪後端 + EULA 檢查 + EULA 同意 API + CORS
 
 // 小工具：找或建立 user
 async function getOrCreateUser(env: any, lineId: string): Promise<number> {
@@ -93,18 +93,39 @@ async function hasUserAgreedLatestEula(
   };
 }
 
-// =============================================================
+// ==================== CORS 設定（給 LIFF EULA API 用） ====================
+
+const EULA_CORS_HEADERS: Record<string, string> = {
+  // 若要更嚴謹，可以改成指定 origin，例如 'https://liff.line.me'
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
+    const method = request.method;
 
     // =========================================================
-    // 1) LIFF EULA 同意 API（給前端 index.html 呼叫）
+    // 0) CORS preflight for EULA 同意 API
     // =========================================================
     if (
-      request.method === "POST" &&
+      method === "OPTIONS" &&
+      pathname === "/api/external/line/eula/consent"
+    ) {
+      return new Response(null, {
+        status: 204,
+        headers: EULA_CORS_HEADERS,
+      });
+    }
+
+    // =========================================================
+    // 1) LIFF EULA 同意 API（給前端 index.html 呼叫，不驗 x-api-key）
+    // =========================================================
+    if (
+      method === "POST" &&
       pathname === "/api/external/line/eula/consent"
     ) {
       try {
@@ -124,7 +145,13 @@ export default {
               success: false,
               error: "Missing lineUserId",
             }),
-            { status: 400, headers: { "Content-Type": "application/json" } }
+            {
+              status: 400,
+              headers: {
+                "Content-Type": "application/json",
+                ...EULA_CORS_HEADERS,
+              },
+            }
           );
         }
 
@@ -136,7 +163,12 @@ export default {
               agreed: false,
               message: "User declined EULA.",
             }),
-            { headers: { "Content-Type": "application/json" } }
+            {
+              headers: {
+                "Content-Type": "application/json",
+                ...EULA_CORS_HEADERS,
+              },
+            }
           );
         }
 
@@ -151,7 +183,13 @@ export default {
               success: false,
               error: "No EULA version configured.",
             }),
-            { status: 500, headers: { "Content-Type": "application/json" } }
+            {
+              status: 500,
+              headers: {
+                "Content-Type": "application/json",
+                ...EULA_CORS_HEADERS,
+              },
+            }
           );
         }
 
@@ -186,7 +224,12 @@ export default {
             alreadyAgreed: !!existing,
             eulaVersion: latestEula.version,
           }),
-          { headers: { "Content-Type": "application/json" } }
+          {
+            headers: {
+              "Content-Type": "application/json",
+              ...EULA_CORS_HEADERS,
+            },
+          }
         );
       } catch (err: any) {
         return new Response(
@@ -194,7 +237,13 @@ export default {
             success: false,
             error: err?.message ?? String(err),
           }),
-          { status: 500, headers: { "Content-Type": "application/json" } }
+          {
+            status: 500,
+            headers: {
+              "Content-Type": "application/json",
+              ...EULA_CORS_HEADERS,
+            },
+          }
         );
       }
     }
@@ -202,7 +251,7 @@ export default {
     // =========================================================
     // 2) Make.com 專用聊天 API（需要 x-api-key）
     // =========================================================
-    if (request.method === "POST" && pathname === "/api/external/make/chat") {
+    if (method === "POST" && pathname === "/api/external/make/chat") {
       // 只對 server-to-server 這支做 API Key 驗證
       const apiKey = request.headers.get("x-api-key");
       if (!apiKey || apiKey !== env.API_KEY) {
@@ -418,7 +467,7 @@ intent_category 只能是以下四個英文字其中之一：
       JSON.stringify({
         success: true,
         message:
-          "AI小咪後端運作正常（v5：EULA 檢查 + LIFF 同意 API + 多輪對談 + 分類）",
+          "AI小咪後端運作正常（v6：EULA 檢查 + LIFF 同意 API + CORS + 多輪對談 + 分類）",
       }),
       { headers: { "content-type": "application/json" } }
     );
