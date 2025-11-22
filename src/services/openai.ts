@@ -22,10 +22,11 @@ export async function chatWithClassification(
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4.1-mini",
+        model: "gpt-5-mini",
         messages,
         max_tokens: 400,
         temperature: 0.7,
+        response_format: { type: "json_object" }
       }),
     }
   );
@@ -146,6 +147,7 @@ JSON 欄位說明：
       ],
       max_tokens: 400,
       temperature: 0.4,
+      response_format: { type: "json_object" }
     }),
   });
 
