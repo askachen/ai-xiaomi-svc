@@ -1,5 +1,5 @@
 // index.ts
-import { handleRequest } from "./src/router";
+import { handleRequest } from "./router";
 
 export default {
   async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
