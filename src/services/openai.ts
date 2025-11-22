@@ -37,14 +37,11 @@ export async function chatWithClassification(
     throw new Error("Invalid OpenAI response: " + JSON.stringify(json));
   }
 
-  const rawContent =
-    json.choices[0].message?.content ?? json.choices[0].message ?? "";
-
   let reply = "";
   let category: ChatResult["category"] = "general";
 
   try {
-    const parsed = JSON.parse(rawContent);
+    const parsed = json.choices[0].message.content;
     reply = parsed.reply ?? "";
     category = parsed.category ?? "general";
 
@@ -52,10 +49,7 @@ export async function chatWithClassification(
       category = "general";
     }
   } catch {
-    reply =
-      typeof rawContent === "string" && rawContent.trim().length > 0
-        ? rawContent
-        : "小咪這邊有點忙碌，等等再和你聊聊好嗎？";
+    reply = "小咪這邊有點忙碌，等等再和你聊聊好嗎？";
     category = "general";
   }
 
@@ -155,15 +149,8 @@ JSON 欄位說明：
   if (!json.choices?.[0]?.message?.content) {
     throw new Error("Invalid OpenAI image response: " + JSON.stringify(json));
   }
-
-  const content: string = json.choices[0].message.content;
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(content);
-  } catch (e) {
-    throw new Error("Failed to parse meal JSON: " + content);
-  }
+  
+  const parsed = json.choices[0].message.content;
 
   const num = (v: any): number | null => {
     if (v === null || v === undefined) return null;
