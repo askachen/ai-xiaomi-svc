@@ -49,32 +49,34 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-function createTimeoutFetch(env: any) {
-  return async function fetchWithTimeout(
-    url: string,
-    options: RequestInit,
-    timeoutMs = 10000
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
+async function fetchWithTimeoutRace(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    let settled = false;
 
-    try {
-      const res = await fetch(url, {
-        ...options,
-        signal: controller.signal,
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`OpenAI request timeout after ${timeoutMs} ms`));
+    }, timeoutMs);
+
+    fetch(url, options)
+      .then((res) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(res);
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
       });
-      return res;
-    } catch (err) {
-      // 這裡只 log 一個粗略錯誤，詳細的在呼叫端再 log
-      await logErrorToDb(env, "openai_image_fetch_error", err, {
-        url,
-        timeoutMs,
-      });
-      throw err;
-    } finally {
-      clearTimeout(id);
-    }
-  };
+  });
 }
 
 // ======================== 1) 文字聊天 + 分類 ========================
@@ -192,17 +194,36 @@ JSON 欄位說明：
 請「只」回傳 JSON，不要多加文字說明。
   `.trim();
 
+  const body = JSON.stringify({
+    model: VISION_MODEL, // gpt-4o-mini
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          {
+            type: "image_url",
+            image_url: {
+              url: imageUrl,
+            },
+          },
+        ],
+      } as any,
+    ],
+    max_tokens: 400,
+    response_format: { type: "json_object" },
+  });
+
   await logErrorToDb(env, "openai_image_debug", undefined, {
     step: "before_openai",
     model: VISION_MODEL,
     image_bytes: imageBuffer.byteLength,
+    body_length: body.length,
   });
-
-  const fetchWithTimeout = createTimeoutFetch(env);
 
   let res: Response;
   try {
-    res = await fetchWithTimeout(
+    res = await fetchWithTimeoutRace(
       "https://api.openai.com/v1/chat/completions",
       {
         method: "POST",
@@ -210,31 +231,14 @@ JSON 欄位說明：
           "Content-Type": "application/json",
           Authorization: `Bearer ${env.OPENAI_API_KEY}`,
         },
-        body: JSON.stringify({
-          model: VISION_MODEL, // gpt-4o-mini
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: prompt },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: imageUrl,
-                  },
-                },
-              ],
-            } as any,
-          ],
-          max_tokens: 400,
-          response_format: { type: "json_object" },
-        }),
+        body,
       },
-      10000 // 10 秒
+      10000 // 10 秒 timeout
     );
   } catch (err) {
+    // ⭐⭐ 這裡一定會在 timeout 或網路錯誤時被呼叫
     await logErrorToDb(env, "openai_image_timeout_or_fetch_error", err, {
-      step: "fetch_with_timeout_threw",
+      step: "fetch_with_timeout_race_threw",
     });
     throw err;
   }
