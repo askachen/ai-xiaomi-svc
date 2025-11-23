@@ -157,6 +157,7 @@ export type MealAnalysisResult = {
   fruits_servings: number | null;
   calories_kcal: number | null;
   raw_json: any;
+  advice_text: string;
 };
 
 export async function analyzeMealFromImage(
@@ -171,33 +172,33 @@ export async function analyzeMealFromImage(
   const imageUrl = `data:image/jpeg;base64,${base64}`;
 
   const prompt = `
-  你是一位專業且溫柔友善的營養師 AI 助手。
+你是一位專業且溫柔友善的營養師 AI 助手。
 
-  請你根據提供的餐點圖片，判斷食物種類並估算營養素，並「以單一 JSON」回覆。
+請你根據提供的餐點圖片，判斷食物種類並估算營養素，並「以單一 JSON」回覆。
 
-  ⚠️ 請務必回傳以下格式（不可多不可少，不要有註解）：
+⚠️ 請務必回傳以下格式（不可多不可少，不要有註解）：
 
-  {
-    "meal": {
-      "meal_type": "breakfast | lunch | dinner | snack",
-      "food_name": "像：雞腿便當 / 牛肉麵 / 沙拉",
-      "description": "一句描述主要成分",
-      "carb_g": number | null,
-      "sugar_g": number | null,
-      "protein_g": number | null,
-      "fat_g": number | null,
-      "veggies_servings": number | null,
-      "fruits_servings": number | null,
-      "calories_kcal": number | null
-    },
-    "advice_text": "一段簡短的自然語言建議（繁體中文，1~3 行），內容請包含：1) 此餐的健康優點、2) 可改善的方向（若有）、3) 友善的提醒方式。不可以出現醫療診斷。"
-  }
+{
+  "meal": {
+    "meal_type": "breakfast | lunch | dinner | snack",
+    "food_name": "像：雞腿便當 / 牛肉麵 / 沙拉",
+    "description": "一句描述主要成分",
+    "carb_g": number | null,
+    "sugar_g": number | null,
+    "protein_g": number | null,
+    "fat_g": number | null,
+    "veggies_servings": number | null,
+    "fruits_servings": number | null,
+    "calories_kcal": number | null
+  },
+  "advice_text": "一段簡短的自然語言建議（繁體中文，1~3 行），內容請包含：1) 此餐的健康優點、2) 可改善的方向（若有）、3) 友善的提醒方式。不可以出現醫療診斷。"
+}
 
-  請注意：
-  - 你回傳的 JSON 不可以多出其他欄位。
-  - 不可以在 JSON 外多加文字。
-  - 數值請盡量估算，不確定可以用 null。
-  `.trim();
+請注意：
+- 你回傳的 JSON 不可以多出其他欄位。
+- 不可以在 JSON 外多加文字。
+- 數值請盡量估算，不確定可以用 null。
+`.trim();
 
   const body = JSON.stringify({
     model: VISION_MODEL,
@@ -239,8 +240,14 @@ export async function analyzeMealFromImage(
 
   const raw = await res.text();
 
+  // 把原始回應存一份（只截前 2000 字免炸 DB）
+  await logErrorToDb(env, "openai_image_raw", undefined, {
+    status: res.status,
+    ok: res.ok,
+    raw: raw.slice(0, 2000),
+  });
+
   if (!res.ok) {
-    // 讓外層 catch，順便有 raw 可以看
     throw new Error(`OpenAI HTTP ${res.status}: ${raw.slice(0, 500)}`);
   }
 
@@ -255,7 +262,13 @@ export async function analyzeMealFromImage(
   }
 
   const choice = data.choices?.[0]?.message?.content;
-  const contentStr = ensureStringContent(choice);
+  let contentStr = ensureStringContent(choice).trim();
+
+  // 🔧 有些模型會包成 ```json ... ```，這裡把 fence 剝掉
+  const fenceMatch = contentStr.match(/```[a-zA-Z0-9]*\s*([\s\S]*?)```/);
+  if (fenceMatch && fenceMatch[1]) {
+    contentStr = fenceMatch[1].trim();
+  }
 
   let parsed: any;
   try {
@@ -274,6 +287,7 @@ export async function analyzeMealFromImage(
   };
 
   const meal = parsed.meal ?? {};
+
   return {
     meal_type: meal.meal_type ?? "",
     food_name: meal.food_name ?? "",
@@ -286,6 +300,6 @@ export async function analyzeMealFromImage(
     fruits_servings: num(meal.fruits_servings),
     calories_kcal: num(meal.calories_kcal),
     raw_json: meal,
-    advice_text: parsed.advice_text ?? ""
+    advice_text: parsed.advice_text ?? "",
   };
 }

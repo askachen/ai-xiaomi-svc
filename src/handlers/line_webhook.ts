@@ -20,7 +20,7 @@ export async function handleLineWebhook(
 
   const events: any[] = body.events ?? [];
 
-  // ✅ 改成非同步：立即回應 LINE，實際處理丟到 waitUntil 裡面
+  // ✅ 非同步：立即回應 LINE，實際處理丟到 waitUntil 裡面
   for (const event of events) {
     ctx.waitUntil(
       (async () => {
@@ -189,6 +189,22 @@ async function handleImageMessage(
 ) {
   const messageId: string | undefined = event.message?.id;
 
+  if (!messageId) {
+    await logErrorToDb(env, "line_webhook_image_no_message_id", undefined, {
+      event,
+    });
+    try {
+      await replyTextMessage(
+        env,
+        replyToken,
+        "小咪收到一張圖片，但讀取不到內容 QQ，再幫小咪傳一次好嗎？"
+      );
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
   try {
     const contentResp = await fetch(
       `${LINE_CONTENT_ENDPOINT}/${encodeURIComponent(messageId)}/content`,
@@ -312,14 +328,17 @@ async function handleImageMessage(
       )
       .run();
 
+    // 5) 回覆使用者分析結果（用 OpenAI 給的活建議）
+    const advice =
+      analysis.advice_text && analysis.advice_text.trim().length > 0
+        ? analysis.advice_text.trim()
+        : "小咪已經幫你記錄這餐囉～之後會慢慢幫你整理一週的飲食狀況！";
 
-    // 5) 回覆使用者分析結果
-    const replyMessage =
-      analysis.reply_text ??
-      "小咪已經幫你記錄這餐囉～之後會慢慢幫你整理一週的飲食狀況！";
-
-    await replyTextMessage(env, replyToken, `小咪幫你看了一下這餐 💡\n${analysis.advice_text}`);
-    
+    await replyTextMessage(
+      env,
+      replyToken,
+      `小咪幫你看了一下這餐 💡\n${advice}`
+    );
   } catch (err) {
     await logErrorToDb(env, "line_webhook_image", err, {
       event,
