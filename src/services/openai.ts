@@ -189,6 +189,7 @@ JSON 欄位說明：
                 type: "image_url",
                 image_url: {
                   url: imageUrl,
+                  detail: "low",
                 },
               },
             ],
