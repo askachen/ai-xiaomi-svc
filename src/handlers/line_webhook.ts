@@ -30,11 +30,6 @@ export async function handleLineWebhook(
     const lineUserId: string | undefined = event.source?.userId;
 
     if (!replyToken || !lineUserId) {
-      // 增加日誌：記錄為什麼這個事件被跳過
-      await logErrorToDb(env, "line_webhook_skip_event", {
-        reason: "Missing replyToken or lineUserId",
-        event,
-      });
       continue;
     }
 
