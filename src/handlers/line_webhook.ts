@@ -168,6 +168,23 @@ async function handleImageMessage(
   replyToken: string,
   lineUserId: string
 ) {
+  // ========== 🔍 DEBUG：記錄圖片事件的完整資訊 ==========
+  try {
+    await logErrorToDb(env, "line_image_debug", null, {
+      note: "Image event received",
+      raw_event: event,
+      replyToken,
+      lineUserId,
+      message_type: event?.message?.type,
+      message_id: event?.message?.id,
+      contentProvider: event?.message?.contentProvider,
+    });
+  } catch (e) {
+    // 不讓 debug logging 打爆流程
+    console.error("DEBUG LOGGING FAILED:", e);
+  }
+  // ========================================================
+
   const messageId: string | undefined = event.message?.id;
   if (!messageId) {
     // 這裡一定要記 log，不然永遠不知道發生什麼事
