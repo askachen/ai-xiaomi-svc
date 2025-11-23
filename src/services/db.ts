@@ -37,31 +37,51 @@ export async function getOrCreateUser(env: any, lineId: string): Promise<number>
 export async function logErrorToDb(
   env: any,
   source: string,
-  error: unknown,
+  error?: unknown,
   payload?: any
 ): Promise<void> {
   try {
-    const err = error as any;
-    const message =
-      typeof err?.message === "string"
-        ? err.message
-        : typeof error === "string"
-        ? error
-        : JSON.stringify(error);
-    const stack = typeof err?.stack === "string" ? err.stack : undefined;
-    const payloadJson = payload !== undefined ? JSON.stringify(payload) : null;
+    let message: string | null = null;
+    let stack: string | null = null;
+
+    if (error) {
+      const err = error as any;
+
+      if (typeof err?.message === "string") {
+        message = err.message;
+      } else if (typeof error === "string") {
+        message = error as string;
+      } else {
+        message = JSON.stringify(error);
+      }
+
+      if (typeof err?.stack === "string") {
+        stack = err.stack;
+      }
+    }
+
+    const payloadJson =
+      payload === undefined ? null : JSON.stringify(payload ?? null);
+
     const nowIso = new Date().toISOString();
 
     await env.DB.prepare(
       `INSERT INTO error_logs (source, message, stack, payload, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5)`
     )
-      .bind(source, message, stack, payloadJson, nowIso)
+      .bind(
+        source ?? "unknown",   // 保底不要是 undefined
+        message,
+        stack,
+        payloadJson,
+        nowIso
+      )
       .run();
 
-    console.error("[ERROR]", source, message);
+    // 同時在 console 印一下
+    console.error("[ERROR]", source, message, payload);
   } catch (logErr) {
-    // logging 本身也不能讓整個 worker 爆掉，所以要吃掉
+    // logging 自己壞掉也不能讓主流程炸掉
     console.error("[ERROR][logErrorToDb failed]", logErr);
   }
 }
