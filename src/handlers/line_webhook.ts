@@ -168,33 +168,29 @@ async function handleImageMessage(
   replyToken: string,
   lineUserId: string
 ) {
-  // ========== 🔍 DEBUG：記錄圖片事件的完整資訊 ==========
-  try {
-    await logErrorToDb(env, "line_image_debug", null, {
-      note: "Image event received",
-      raw_event: event,
-      replyToken,
-      lineUserId,
-      message_type: event?.message?.type,
-      message_id: event?.message?.id,
-      contentProvider: event?.message?.contentProvider,
-    });
-  } catch (e) {
-    // 不讓 debug logging 打爆流程
-    console.error("DEBUG LOGGING FAILED:", e);
-  }
-  // ========================================================
+  // 0) 一進來就記一筆 debug
+  await logErrorToDb(env, "line_image_debug", undefined, {
+    step: "entered_handleImageMessage",
+    raw_event: event,
+    replyToken,
+    lineUserId,
+    message_type: event?.message?.type,
+    message_id: event?.message?.id,
+    contentProvider: event?.message?.contentProvider,
+  });
 
   const messageId: string | undefined = event.message?.id;
   if (!messageId) {
-    // 這裡一定要記 log，不然永遠不知道發生什麼事
-    await logErrorToDb(env, "line_webhook_image_no_message_id", { event });
+    await logErrorToDb(env, "line_webhook_image_no_message_id", undefined, {
+      step: "no_message_id",
+      event,
+    });
 
     try {
       await replyTextMessage(
         env,
         replyToken,
-        "小咪有收到一張圖片，但沒辦法取得內容 QQ\n可能是測試事件或特殊來源的圖片，之後再試一次好嗎？"
+        "小咪收到一張圖片，但是取得不到圖片內容 QQ\n可能是 LINE 測試事件或格式不符合，小咪再試一次喔～"
       );
     } catch {
       // ignore
@@ -203,19 +199,38 @@ async function handleImageMessage(
   }
 
   try {
+    // 1) 取得/建立 user
     const userId = await getOrCreateUser(env, lineUserId);
 
-    // EULA 檢查
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_getOrCreateUser",
+      userId,
+      lineUserId,
+    });
+
+    // 2) EULA 檢查
     const { agreed, latestEula } = await hasUserAgreedLatestEula(env, userId);
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_eula_check",
+      userId,
+      agreed,
+      latestEula_id: latestEula?.id ?? null,
+    });
+
     if (!agreed && latestEula) {
       const eulaText =
         "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
         latestEula.url;
       await replyTextMessage(env, replyToken, eulaText);
+
+      await logErrorToDb(env, "line_image_debug", undefined, {
+        step: "replied_eula_in_image_flow",
+        userId,
+      });
       return;
     }
 
-    // 1) 跟 LINE 拿圖片內容
+    // 3) 跟 LINE 拿圖片內容
     if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
       throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
     }
@@ -230,6 +245,12 @@ async function handleImageMessage(
       }
     );
 
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_fetch_image",
+      status: imgRes.status,
+      ok: imgRes.ok,
+    });
+
     if (!imgRes.ok) {
       const t = await imgRes.text().catch(() => "");
       throw new Error(`LINE content fetch failed ${imgRes.status}: ${t}`);
@@ -237,12 +258,26 @@ async function handleImageMessage(
 
     const imageBuffer = await imgRes.arrayBuffer();
 
-    // 2) 丟給 OpenAI 做飲食分析
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_imageBuffer",
+      buffer_bytes: imageBuffer.byteLength,
+    });
+
+    // 4) 丟給 OpenAI 做飲食分析
     const analysis = await analyzeMealFromImage(env, imageBuffer);
+
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_analyzeMealFromImage",
+      analysis_preview: {
+        meal_type: analysis.meal_type,
+        food_name: analysis.food_name,
+        calories_kcal: analysis.calories_kcal,
+      },
+    });
 
     const nowIso = new Date().toISOString();
 
-    // 3) 寫入 meal_logs
+    // 5) 寫入 meal_logs
     await env.DB.prepare(
       `INSERT INTO meal_logs
         (user_id, eaten_at, meal_type, food_name, description,
@@ -257,7 +292,7 @@ async function handleImageMessage(
     )
       .bind(
         userId,
-        nowIso,                      // eaten_at 先用現在時間
+        nowIso,
         analysis.meal_type || null,
         analysis.food_name || null,
         analysis.description || null,
@@ -268,15 +303,20 @@ async function handleImageMessage(
         analysis.veggies_servings,
         analysis.fruits_servings,
         analysis.calories_kcal,
-        null,                        // photo_url：未來若有 R2 可改存實體 URL
-        "line_image",                // source
+        null,
+        "line_image",
         JSON.stringify(analysis.raw_json ?? {}),
         nowIso,
         nowIso
       )
       .run();
 
-    // 4) 回覆使用者
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_insert_meal_logs",
+      userId,
+    });
+
+    // 6) 組回覆文字
     const lines: string[] = [];
 
     if (analysis.food_name) {
@@ -286,13 +326,20 @@ async function handleImageMessage(
     }
 
     if (analysis.calories_kcal != null) {
-      lines.push(`估計熱量大約在 **${Math.round(analysis.calories_kcal)} 大卡** 左右。`);
+      lines.push(
+        `估計熱量大約在 **${Math.round(
+          analysis.calories_kcal
+        )} 大卡** 左右。`
+      );
     }
 
     const macros: string[] = [];
-    if (analysis.protein_g != null) macros.push(`蛋白質約 ${Math.round(analysis.protein_g)}g`);
-    if (analysis.carb_g != null) macros.push(`碳水約 ${Math.round(analysis.carb_g)}g`);
-    if (analysis.fat_g != null) macros.push(`脂肪約 ${Math.round(analysis.fat_g)}g`);
+    if (analysis.protein_g != null)
+      macros.push(`蛋白質約 ${Math.round(analysis.protein_g)}g`);
+    if (analysis.carb_g != null)
+      macros.push(`碳水約 ${Math.round(analysis.carb_g)}g`);
+    if (analysis.fat_g != null)
+      macros.push(`脂肪約 ${Math.round(analysis.fat_g)}g`);
 
     if (macros.length > 0) {
       lines.push(macros.join("、"));
@@ -315,13 +362,27 @@ async function handleImageMessage(
     lines.push("如果你有在控制體重，小咪建議：");
     lines.push("- 慢慢吃、細嚼，給身體一點時間感受飽足感");
     lines.push("- 下一餐可以多補一點蔬菜、少一點油炸或含糖飲料");
-    lines.push("之後你也可以跟小咪說「幫我看今天吃得怎樣」，小咪會幫你做一天的總結喔 🌱");
+    lines.push(
+      "之後你也可以跟小咪說「幫我看今天吃得怎樣」，小咪會幫你做一天的總結喔 🌱"
+    );
 
     const replyText = lines.join("\n");
 
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "before_replyTextMessage",
+      reply_length: replyText.length,
+    });
+
+    // 7) 回 LINE
     await replyTextMessage(env, replyToken, replyText);
+
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_replyTextMessage",
+    });
   } catch (err) {
-    await logErrorToDb(env, "line_webhook_image", err, { event });
+    await logErrorToDb(env, "line_webhook_image", err, {
+      event,
+    });
 
     try {
       await replyTextMessage(
