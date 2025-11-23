@@ -49,6 +49,34 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function createTimeoutFetch(env: any) {
+  return async function fetchWithTimeout(
+    url: string,
+    options: RequestInit,
+    timeoutMs = 10000
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      return res;
+    } catch (err) {
+      // 這裡只 log 一個粗略錯誤，詳細的在呼叫端再 log
+      await logErrorToDb(env, "openai_image_fetch_error", err, {
+        url,
+        timeoutMs,
+      });
+      throw err;
+    } finally {
+      clearTimeout(id);
+    }
+  };
+}
+
 // ======================== 1) 文字聊天 + 分類 ========================
 
 export async function chatWithClassification(
@@ -170,39 +198,43 @@ JSON 欄位說明：
     image_bytes: imageBuffer.byteLength,
   });
 
+  const fetchWithTimeout = createTimeoutFetch(env);
+
   let res: Response;
   try {
-    res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL, // gpt-4o-mini
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageUrl,
-                  detail: "low",
+    res = await fetchWithTimeout(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: VISION_MODEL, // gpt-4o-mini
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: imageUrl,
+                  },
                 },
-              },
-            ],
-          } as any,
-        ],
-        max_tokens: 400,
-        response_format: { type: "json_object" },
-      }),
-    });
+              ],
+            } as any,
+          ],
+          max_tokens: 400,
+          response_format: { type: "json_object" },
+        }),
+      },
+      10000 // 10 秒
+    );
   } catch (err) {
-    // 🔥 重點：如果 fetch 本身丟 error（例如網路、TLS 之類），在這裡記 log
-    await logErrorToDb(env, "openai_image_fetch_error", err, {
-      step: "fetch_threw",
+    await logErrorToDb(env, "openai_image_timeout_or_fetch_error", err, {
+      step: "fetch_with_timeout_threw",
     });
     throw err;
   }
