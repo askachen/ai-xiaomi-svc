@@ -29,7 +29,7 @@ export async function handleLineWebhook(
 
   const events: any[] = body.events ?? [];
   // 記錄收到的原始 payload，無論 events 是否為空
-  await logErrorToDb(env, "line_webhook_payload_received", {}, body);
+  await logErrorToDb(env, "line_webhook_payload_received", null, body ?? {});
 
   for (const event of events) {
     if (event.type !== "message") {
