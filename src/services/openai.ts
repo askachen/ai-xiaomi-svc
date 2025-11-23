@@ -11,7 +11,7 @@ const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
 
 const CHAT_MODEL = "gpt-4.1-mini";
 
-const VISION_MODEL = "gpt-4o"; // 先用大哥把 flow 打通
+const VISION_MODEL = "gpt-4.1-mini";
 
 // ======================== 共用小工具 ========================
 
@@ -221,14 +221,6 @@ export async function analyzeMealFromImage(
     max_tokens: 400,
   });
 
-  // debug：呼叫前
-  await logErrorToDb(env, "openai_image_debug", undefined, {
-    step: "before_openai_real",
-    model: VISION_MODEL,
-    image_bytes: imageBuffer.byteLength,
-    body_length: body.length,
-  });
-
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -239,13 +231,6 @@ export async function analyzeMealFromImage(
   });
 
   const raw = await res.text();
-
-  // 把原始回應存一份（只截前 2000 字免炸 DB）
-  await logErrorToDb(env, "openai_image_raw", undefined, {
-    status: res.status,
-    ok: res.ok,
-    raw: raw.slice(0, 2000),
-  });
 
   if (!res.ok) {
     throw new Error(`OpenAI HTTP ${res.status}: ${raw.slice(0, 500)}`);

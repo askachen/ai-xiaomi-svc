@@ -243,30 +243,11 @@ async function handleImageMessage(
     const imageArrayBuffer = await contentResp.arrayBuffer();
     const imageBytes = new Uint8Array(imageArrayBuffer);
 
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_fetch",
-      messageId,
-      byteLength: imageBytes.byteLength,
-    });
-
     // 1) 取得/建立 user
     const userId = await getOrCreateUser(env, lineUserId);
 
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_getOrCreateUser",
-      userId,
-      lineUserId,
-    });
-
     // 2) EULA 檢查
     const { agreed, latestEula } = await hasUserAgreedLatestEula(env, userId);
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_eula_check",
-      userId,
-      agreed,
-      latestEula_id: latestEula?.id ?? null,
-    });
-
     if (!agreed && latestEula) {
       const eulaText =
         "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
@@ -277,12 +258,6 @@ async function handleImageMessage(
 
     // 3) 丟給 OpenAI 分析餐點
     const analysis = await analyzeMealFromImage(env, imageBytes);
-
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_openai",
-      analysis,
-    });
-
     if (!analysis) {
       await replyTextMessage(
         env,
