@@ -20,33 +20,48 @@ export async function handleLineWebhook(
 
   const events: any[] = body.events ?? [];
 
+  // ✅ 改成非同步：立即回應 LINE，實際處理丟到 waitUntil 裡面
   for (const event of events) {
-    if (event.type !== "message") {
-      continue;
-    }
+    ctx.waitUntil(
+      (async () => {
+        try {
+          if (event.type !== "message") {
+            return;
+          }
 
-    const msgType = event.message?.type;
-    const replyToken: string = event.replyToken;
-    const lineUserId: string | undefined = event.source?.userId;
+          const msgType = event.message?.type;
+          const replyToken: string = event.replyToken;
+          const lineUserId: string | undefined = event.source?.userId;
 
-    if (!replyToken || !lineUserId) {
-      continue;
-    }
+          if (!replyToken || !lineUserId) {
+            return;
+          }
 
-    if (msgType === "text") {
-      await handleTextMessage(event, env, replyToken, lineUserId);
-    } else if (msgType === "image") {
-      await handleImageMessage(event, env, replyToken, lineUserId);
-    } else {
-      // 其他類型暫時回一個說明
-      try {
-        await replyTextMessage(env, replyToken, "小咪現在先專心處理文字跟餐點照片喔～其他類型的訊息之後會慢慢學會 💪");
-      } catch {
-        // ignore
-      }
-    }
+          if (msgType === "text") {
+            await handleTextMessage(event, env, replyToken, lineUserId);
+          } else if (msgType === "image") {
+            await handleImageMessage(event, env, replyToken, lineUserId);
+          } else {
+            // 其他類型暫時回一個說明
+            try {
+              await replyTextMessage(
+                env,
+                replyToken,
+                "小咪現在先專心處理文字跟餐點照片喔～其他類型的訊息之後會慢慢學會 💪"
+              );
+            } catch {
+              // ignore
+            }
+          }
+        } catch (err) {
+          // 額外保險：整個 event 處理如果炸掉，也寫進 error_logs
+          await logErrorToDb(env, "line_webhook_event", err, { event });
+        }
+      })()
+    );
   }
 
+  // 這裡會很快就回 200，避免 LINE timeout
   return new Response("OK");
 }
 
@@ -73,7 +88,7 @@ async function handleTextMessage(
       return;
     }
 
-    // 撈歷史
+    // 撈過去 36 小時的歷史訊息
     const historyResult = await env.DB.prepare(
       `SELECT direction, text_content
        FROM chat_logs
@@ -91,33 +106,27 @@ async function handleTextMessage(
       content: row.text_content as string,
     }));
 
+    const systemPrompt = `
+你是「AI 小咪」，一位溫柔、可愛、但也很務實的健康生活教練。
+請用繁體中文回覆，語氣自然、有溫度，不要太制式，也不要太油膩。
+你的核心任務：
+1. 陪伴使用者記錄每天的身體狀況（精神、體力、心情、睡眠）。
+2. 協助分析飲食與熱量，給出具體、可執行的小建議。
+3. 協助維持動力與習慣建立，不責備、但會適度提醒。
+4. 不提供專業醫療診斷，不使用「診斷、處方、治療」等字眼，改用「建議、可以考慮、可以試試看」。
+
+回覆原則：
+- 回覆長度以 1～3 段為主，避免一次塞太多訊息。
+- 優先肯定、理解使用者的感受，再給建議。
+- 若牽涉到明顯的醫療風險，請溫柔建議「尋求專業醫師或營養師協助」，不要自己下結論。
+
+請務必用繁體中文作答。
+`.trim();
+
     const messages = [
       {
         role: "system",
-        content: `
-你是「AI 小咪」，一位溫柔、療癒、正向的健康教練，
-擅長幫助使用者在飲食、減重、健康習慣和情緒上做調整。
-你會：
-- 先理解使用者的狀況與情緒
-- 給出貼心、具體、可執行的建議（用繁體中文）
-- 不要用太制式的口吻，要像一位溫柔但有行動力的教練
-
-除了回覆之外，你還需要「替使用者這一句話做分類」：
-intent_category 只能是以下四個英文字其中之一：
-- "diet"    : 與飲食、減肥、卡路里、吃什麼、喝什麼相關
-- "emotion" : 與心情、壓力、焦慮、沮喪、動力、鼓勵相關
-- "health"  : 與運動、睡眠、身體不適、健康習慣相關
-- "general" : 其他不屬於上述三類的內容
-
-請你只回傳「一段 JSON 字串」，格式如下：
-
-{
-  "category": "diet | emotion | health | general 其中一個",
-  "reply": "你要對使用者說的完整回覆內容（字串，繁體中文）"
-}
-
-不要加註解、不要多一句話，只能是 JSON。
-      `.trim(),
+        content: systemPrompt,
       },
       ...historyMessages,
       {
@@ -168,24 +177,12 @@ async function handleImageMessage(
   replyToken: string,
   lineUserId: string
 ) {
-  // 0) 一進來就記一筆 debug
-  await logErrorToDb(env, "line_image_debug", undefined, {
-    step: "entered_handleImageMessage",
-    raw_event: event,
-    replyToken,
-    lineUserId,
-    message_type: event?.message?.type,
-    message_id: event?.message?.id,
-    contentProvider: event?.message?.contentProvider,
-  });
-
   const messageId: string | undefined = event.message?.id;
+
   if (!messageId) {
     await logErrorToDb(env, "line_webhook_image_no_message_id", undefined, {
-      step: "no_message_id",
       event,
     });
-
     try {
       await replyTextMessage(
         env,
@@ -199,6 +196,55 @@ async function handleImageMessage(
   }
 
   try {
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "before_fetch",
+      messageId,
+      lineUserId,
+    });
+
+    const contentResp = await fetch(
+      `${LINE_CONTENT_ENDPOINT}/${encodeURIComponent(messageId)}/content`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+      }
+    );
+
+    if (!contentResp.ok) {
+      await logErrorToDb(
+        env,
+        "line_webhook_image_fetch_failed",
+        undefined,
+        {
+          status: contentResp.status,
+          statusText: contentResp.statusText,
+          messageId,
+        }
+      );
+
+      try {
+        await replyTextMessage(
+          env,
+          replyToken,
+          "小咪剛剛在跟 LINE 拿照片的時候遇到一點小問題 QQ\n等等再請你重新傳一次照片給小咪好嗎？"
+        );
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const imageArrayBuffer = await contentResp.arrayBuffer();
+    const imageBytes = new Uint8Array(imageArrayBuffer);
+
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_fetch",
+      messageId,
+      byteLength: imageBytes.byteLength,
+    });
+
     // 1) 取得/建立 user
     const userId = await getOrCreateUser(env, lineUserId);
 
@@ -222,62 +268,29 @@ async function handleImageMessage(
         "嗨～歡迎使用 AI 小咪！因為是第一次使用，小咪要先請你閱讀並同意「使用者條款」，小咪會好好保護你的個人資料，請放心喔！\n\n" +
         latestEula.url;
       await replyTextMessage(env, replyToken, eulaText);
-
-      await logErrorToDb(env, "line_image_debug", undefined, {
-        step: "replied_eula_in_image_flow",
-        userId,
-      });
       return;
     }
 
-    // 3) 跟 LINE 拿圖片內容
-    if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
-      throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
+    // 3) 丟給 OpenAI 分析餐點
+    const analysis = await analyzeMealFromImage(env, imageBytes);
+
+    await logErrorToDb(env, "line_image_debug", undefined, {
+      step: "after_openai",
+      analysis,
+    });
+
+    if (!analysis) {
+      await replyTextMessage(
+        env,
+        replyToken,
+        "小咪剛剛看這張照片的時候有點看不清楚 QQ\n可以再傳一張清楚一點的餐點照片給小咪嗎？"
+      );
+      return;
     }
-
-    const imgRes = await fetch(
-      `${LINE_CONTENT_ENDPOINT}/${messageId}/content`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
-        },
-      }
-    );
-
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_fetch_image",
-      status: imgRes.status,
-      ok: imgRes.ok,
-    });
-
-    if (!imgRes.ok) {
-      const t = await imgRes.text().catch(() => "");
-      throw new Error(`LINE content fetch failed ${imgRes.status}: ${t}`);
-    }
-
-    const imageBuffer = await imgRes.arrayBuffer();
-
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_imageBuffer",
-      buffer_bytes: imageBuffer.byteLength,
-    });
-
-    // 4) 丟給 OpenAI 做飲食分析
-    const analysis = await analyzeMealFromImage(env, imageBuffer);
-
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_analyzeMealFromImage",
-      analysis_preview: {
-        meal_type: analysis.meal_type,
-        food_name: analysis.food_name,
-        calories_kcal: analysis.calories_kcal,
-      },
-    });
 
     const nowIso = new Date().toISOString();
 
-    // 5) 寫入 meal_logs
+    // 4) 寫入 meal_logs
     await env.DB.prepare(
       `INSERT INTO meal_logs
         (user_id, eaten_at, meal_type, food_name, description,
@@ -314,67 +327,15 @@ async function handleImageMessage(
     await logErrorToDb(env, "line_image_debug", undefined, {
       step: "after_insert_meal_logs",
       userId,
+      nowIso,
     });
 
-    // 6) 組回覆文字
-    const lines: string[] = [];
+    // 5) 回覆使用者分析結果
+    const replyMessage =
+      analysis.reply_text ??
+      "小咪已經幫你記錄這餐囉～之後會慢慢幫你整理一週的飲食狀況！";
 
-    if (analysis.food_name) {
-      lines.push(`看起來這餐主要是：「${analysis.food_name}」`);
-    } else {
-      lines.push("小咪大概看得出來這是一餐吃的東西～");
-    }
-
-    if (analysis.calories_kcal != null) {
-      lines.push(
-        `估計熱量大約在 **${Math.round(
-          analysis.calories_kcal
-        )} 大卡** 左右。`
-      );
-    }
-
-    const macros: string[] = [];
-    if (analysis.protein_g != null)
-      macros.push(`蛋白質約 ${Math.round(analysis.protein_g)}g`);
-    if (analysis.carb_g != null)
-      macros.push(`碳水約 ${Math.round(analysis.carb_g)}g`);
-    if (analysis.fat_g != null)
-      macros.push(`脂肪約 ${Math.round(analysis.fat_g)}g`);
-
-    if (macros.length > 0) {
-      lines.push(macros.join("、"));
-    }
-
-    if (analysis.veggies_servings != null || analysis.fruits_servings != null) {
-      const vf: string[] = [];
-      if (analysis.veggies_servings != null) {
-        vf.push(`蔬菜約 ${analysis.veggies_servings} 份`);
-      }
-      if (analysis.fruits_servings != null) {
-        vf.push(`水果約 ${analysis.fruits_servings} 份`);
-      }
-      if (vf.length > 0) {
-        lines.push(vf.join("、"));
-      }
-    }
-
-    lines.push("");
-    lines.push("如果你有在控制體重，小咪建議：");
-    lines.push("- 慢慢吃、細嚼，給身體一點時間感受飽足感");
-    lines.push("- 下一餐可以多補一點蔬菜、少一點油炸或含糖飲料");
-    lines.push(
-      "之後你也可以跟小咪說「幫我看今天吃得怎樣」，小咪會幫你做一天的總結喔 🌱"
-    );
-
-    const replyText = lines.join("\n");
-
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "before_replyTextMessage",
-      reply_length: replyText.length,
-    });
-
-    // 7) 回 LINE
-    await replyTextMessage(env, replyToken, replyText);
+    await replyTextMessage(env, replyToken, replyMessage);
 
     await logErrorToDb(env, "line_image_debug", undefined, {
       step: "after_replyTextMessage",
