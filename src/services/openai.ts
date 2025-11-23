@@ -9,11 +9,9 @@ export type ChatResult = {
 
 const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
 
-// 文字聊天：用 gpt-4.1-mini
 const CHAT_MODEL = "gpt-4.1-mini";
 
-// 圖片分析：用 gpt-4o-mini（官方穩定支援 image_url 的 vision 模型）
-const VISION_MODEL = "gpt-4o-mini";
+const VISION_MODEL = "gpt-4o"; // 先用大哥把 flow 打通
 
 // ======================== 共用小工具 ========================
 
@@ -160,36 +158,6 @@ export type MealAnalysisResult = {
   raw_json: any;
 };
 
-
-export async function analyzeMealFromImage(
-  env: any,
-  imageBuffer: ArrayBuffer
-): Promise<MealAnalysisResult> {
-  // 進來就印一筆，確認真的有跑到這支 function
-  await logErrorToDb(env, "openai_image_debug", undefined, {
-    step: "entered_analyze_stub",
-    image_bytes: imageBuffer.byteLength,
-  });
-
-  // 完全不呼叫 OpenAI，直接回一個固定結果
-  return {
-    meal_type: "debug_meal",
-    food_name: "除錯用測試餐點",
-    description: "這是 analyzeMealFromImage stub 回傳的固定結果",
-    carb_g: 10,
-    sugar_g: 5,
-    protein_g: 3,
-    fat_g: 2,
-    veggies_servings: 1,
-    fruits_servings: 0,
-    calories_kcal: 123,
-    raw_json: {
-      debug: true,
-    },
-  };
-}
-
-/*
 export async function analyzeMealFromImage(
   env: any,
   imageBuffer: ArrayBuffer
@@ -202,30 +170,30 @@ export async function analyzeMealFromImage(
   const imageUrl = `data:image/jpeg;base64,${base64}`;
 
   const prompt = `
-你是一位專業的營養師助手，請根據照片判斷餐點內容，並以 JSON 格式回傳。
+你是一位專業營養師助手，請根據下列餐點照片，以「單一 JSON」回覆估算結果。
 
-請盡量用「數值」估算營養，不確定可以合理估計，不要留空。
+請盡量用數值估算營養，不確定可以合理估計，不要留空，用 null。
 
-JSON 欄位說明：
+只允許以下欄位，不要多加其他東西，也不要加註解或文字：
 
 {
-  "meal_type": "breakfast / lunch / dinner / snack 之類的餐別（用英文或中文皆可）",
-  "food_name": "主餐名稱，例如：牛肉麵、雞腿便當",
-  "description": "用 1-3 句描述餐點內容與主要食材",
-  "carb_g":  碳水化合物克數（number）,
-  "sugar_g": 糖分克數（number）,
-  "protein_g": 蛋白質克數（number）,
-  "fat_g": 脂肪克數（number）,
-  "veggies_servings": 蔬菜份數（number）,
-  "fruits_servings": 水果份數（number）,
-  "calories_kcal": 熱量（大卡，number）
+  "meal_type": "breakfast | lunch | dinner | snack 等餐別",
+  "food_name": "主餐名稱，例如：雞腿便當",
+  "description": "1~3 句描述餐點內容與主要食材",
+  "carb_g":  碳水化合物克數（number 或 null）,
+  "sugar_g": 糖分克數（number 或 null）,
+  "protein_g": 蛋白質克數（number 或 null）,
+  "fat_g": 脂肪克數（number 或 null）,
+  "veggies_servings": 蔬菜份數（number 或 null）,
+  "fruits_servings": 水果份數（number 或 null）,
+  "calories_kcal": 熱量（大卡，number 或 null）
 }
 
-請「只」回傳 JSON，不要多加文字說明。
+請「只」回傳這個 JSON，前後不要出現任何多餘文字。
   `.trim();
 
   const body = JSON.stringify({
-    model: VISION_MODEL, // gpt-4o-mini
+    model: VISION_MODEL,
     messages: [
       {
         role: "user",
@@ -235,98 +203,87 @@ JSON 欄位說明：
             type: "image_url",
             image_url: {
               url: imageUrl,
+              // 先用 detail: "low" 降一點負擔，有需要再調
+              detail: "low",
             },
           },
         ],
       } as any,
     ],
     max_tokens: 400,
-    response_format: { type: "json_object" },
   });
 
+  // debug：呼叫前
   await logErrorToDb(env, "openai_image_debug", undefined, {
-    step: "before_openai",
+    step: "before_openai_real",
     model: VISION_MODEL,
     image_bytes: imageBuffer.byteLength,
     body_length: body.length,
   });
 
-  let res: Response;
-  try {
-    res = await fetchWithTimeoutRace(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-        },
-        body,
-      },
-      10000 // 10 秒 timeout
-    );
-  } catch (err) {
-    // ⭐⭐ 這裡一定會在 timeout 或網路錯誤時被呼叫
-    await logErrorToDb(env, "openai_image_timeout_or_fetch_error", err, {
-      step: "fetch_with_timeout_race_threw",
-    });
-    throw err;
-  }
-
-  await logErrorToDb(env, "openai_image_debug", undefined, {
-    step: "after_fetch",
-    status: res.status,
-    ok: res.ok,
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body,
   });
 
-  let json: any;
+  const raw = await res.text();
+
+  // 不管成功失敗，先把 raw 壓一份到 log（砍到前 2000 chars）
+  await logErrorToDb(env, "openai_image_raw", undefined, {
+    status: res.status,
+    ok: res.ok,
+    raw: raw.slice(0, 2000),
+  });
+
+  if (!res.ok) {
+    // 讓外層 catch，順便有 raw 可以看
+    throw new Error(`OpenAI HTTP ${res.status}: ${raw.slice(0, 500)}`);
+  }
+
+  let data: any;
   try {
-    json = await res.json();
-  } catch (err) {
-    await logErrorToDb(env, "openai_image_json_error", err, {
-      status: res.status,
+    data = JSON.parse(raw);
+  } catch (e) {
+    await logErrorToDb(env, "openai_image_json_parse_error", e, {
+      raw_sample: raw.slice(0, 2000),
     });
-    throw err;
+    throw new Error("Failed to parse OpenAI JSON response");
   }
 
-  if (json.error) {
-    await logErrorToDb(env, "openai_image_api_error", undefined, {
-      error: json.error,
-    });
-    throw new Error("OpenAI image error: " + JSON.stringify(json));
-  }
-
-  if (!json.choices || !json.choices[0] || !json.choices[0].message) {
-    await logErrorToDb(env, "openai_image_invalid_response", undefined, {
-      json,
-    });
-    throw new Error("Invalid OpenAI image response: " + JSON.stringify(json));
-  }
-
-  const contentStr = ensureStringContent(json.choices[0].message.content);
+  const choice = data.choices?.[0]?.message?.content;
+  const contentStr = ensureStringContent(choice);
 
   let parsed: any;
   try {
     parsed = JSON.parse(contentStr);
-  } catch (err) {
-    await logErrorToDb(env, "openai_image_parse_error", err, {
-      contentStr,
+  } catch (e) {
+    await logErrorToDb(env, "openai_image_content_parse_error", e, {
+      content_sample: contentStr.slice(0, 2000),
     });
-    throw new Error("Failed to parse meal JSON: " + contentStr);
+    throw new Error("Failed to parse meal JSON content");
   }
+
+  const num = (v: any): number | null => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
 
   return {
     meal_type: parsed.meal_type ?? "",
     food_name: parsed.food_name ?? "",
     description: parsed.description ?? "",
-    carb_g: safeNumber(parsed.carb_g),
-    sugar_g: safeNumber(parsed.sugar_g),
-    protein_g: safeNumber(parsed.protein_g),
-    fat_g: safeNumber(parsed.fat_g),
-    veggies_servings: safeNumber(parsed.veggies_servings),
-    fruits_servings: safeNumber(parsed.fruits_servings),
-    calories_kcal: safeNumber(parsed.calories_kcal),
+    carb_g: num(parsed.carb_g),
+    sugar_g: num(parsed.sugar_g),
+    protein_g: num(parsed.protein_g),
+    fat_g: num(parsed.fat_g),
+    veggies_servings: num(parsed.veggies_servings),
+    fruits_servings: num(parsed.fruits_servings),
+    calories_kcal: num(parsed.calories_kcal),
     raw_json: parsed,
   };
 }
-*/
