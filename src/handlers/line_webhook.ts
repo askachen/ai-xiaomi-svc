@@ -189,29 +189,7 @@ async function handleImageMessage(
 ) {
   const messageId: string | undefined = event.message?.id;
 
-  if (!messageId) {
-    await logErrorToDb(env, "line_webhook_image_no_message_id", undefined, {
-      event,
-    });
-    try {
-      await replyTextMessage(
-        env,
-        replyToken,
-        "小咪收到一張圖片，但是取得不到圖片內容 QQ\n可能是 LINE 測試事件或格式不符合，小咪再試一次喔～"
-      );
-    } catch {
-      // ignore
-    }
-    return;
-  }
-
   try {
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "before_fetch",
-      messageId,
-      lineUserId,
-    });
-
     const contentResp = await fetch(
       `${LINE_CONTENT_ENDPOINT}/${encodeURIComponent(messageId)}/content`,
       {
@@ -334,22 +312,14 @@ async function handleImageMessage(
       )
       .run();
 
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_insert_meal_logs",
-      userId,
-      nowIso,
-    });
 
     // 5) 回覆使用者分析結果
     const replyMessage =
       analysis.reply_text ??
       "小咪已經幫你記錄這餐囉～之後會慢慢幫你整理一週的飲食狀況！";
 
-    await replyTextMessage(env, replyToken, replyMessage);
-
-    await logErrorToDb(env, "line_image_debug", undefined, {
-      step: "after_replyTextMessage",
-    });
+    await replyTextMessage(env, replyToken, `小咪幫你看了一下這餐 💡\n${analysis.advice_text}`);
+    
   } catch (err) {
     await logErrorToDb(env, "line_webhook_image", err, {
       event,

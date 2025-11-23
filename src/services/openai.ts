@@ -171,26 +171,32 @@ export async function analyzeMealFromImage(
   const imageUrl = `data:image/jpeg;base64,${base64}`;
 
   const prompt = `
-你是一位專業營養師助手，請根據下列餐點照片，以「單一 JSON」回覆估算結果。
+  你是一位專業且溫柔友善的營養師 AI 助手。
 
-請盡量用數值估算營養，不確定可以合理估計，不要留空，用 null。
+  請你根據提供的餐點圖片，判斷食物種類並估算營養素，並「以單一 JSON」回覆。
 
-只允許以下欄位，不要多加其他東西，也不要加註解或文字：
+  ⚠️ 請務必回傳以下格式（不可多不可少，不要有註解）：
 
-{
-  "meal_type": "breakfast | lunch | dinner | snack 等餐別",
-  "food_name": "主餐名稱，例如：雞腿便當",
-  "description": "1~3 句描述餐點內容與主要食材",
-  "carb_g":  碳水化合物克數（number 或 null）,
-  "sugar_g": 糖分克數（number 或 null）,
-  "protein_g": 蛋白質克數（number 或 null）,
-  "fat_g": 脂肪克數（number 或 null）,
-  "veggies_servings": 蔬菜份數（number 或 null）,
-  "fruits_servings": 水果份數（number 或 null）,
-  "calories_kcal": 熱量（大卡，number 或 null）
-}
+  {
+    "meal": {
+      "meal_type": "breakfast | lunch | dinner | snack",
+      "food_name": "像：雞腿便當 / 牛肉麵 / 沙拉",
+      "description": "一句描述主要成分",
+      "carb_g": number | null,
+      "sugar_g": number | null,
+      "protein_g": number | null,
+      "fat_g": number | null,
+      "veggies_servings": number | null,
+      "fruits_servings": number | null,
+      "calories_kcal": number | null
+    },
+    "advice_text": "一段簡短的自然語言建議（繁體中文，1~3 行），內容請包含：1) 此餐的健康優點、2) 可改善的方向（若有）、3) 友善的提醒方式。不可以出現醫療診斷。"
+  }
 
-請「只」回傳這個 JSON，前後不要出現任何多餘文字。
+  請注意：
+  - 你回傳的 JSON 不可以多出其他欄位。
+  - 不可以在 JSON 外多加文字。
+  - 數值請盡量估算，不確定可以用 null。
   `.trim();
 
   const body = JSON.stringify({
@@ -233,13 +239,6 @@ export async function analyzeMealFromImage(
 
   const raw = await res.text();
 
-  // 不管成功失敗，先把 raw 壓一份到 log（砍到前 2000 chars）
-  await logErrorToDb(env, "openai_image_raw", undefined, {
-    status: res.status,
-    ok: res.ok,
-    raw: raw.slice(0, 2000),
-  });
-
   if (!res.ok) {
     // 讓外層 catch，順便有 raw 可以看
     throw new Error(`OpenAI HTTP ${res.status}: ${raw.slice(0, 500)}`);
@@ -274,17 +273,19 @@ export async function analyzeMealFromImage(
     return Number.isFinite(n) ? n : null;
   };
 
+  const meal = parsed.meal ?? {};
   return {
-    meal_type: parsed.meal_type ?? "",
-    food_name: parsed.food_name ?? "",
-    description: parsed.description ?? "",
-    carb_g: num(parsed.carb_g),
-    sugar_g: num(parsed.sugar_g),
-    protein_g: num(parsed.protein_g),
-    fat_g: num(parsed.fat_g),
-    veggies_servings: num(parsed.veggies_servings),
-    fruits_servings: num(parsed.fruits_servings),
-    calories_kcal: num(parsed.calories_kcal),
-    raw_json: parsed,
+    meal_type: meal.meal_type ?? "",
+    food_name: meal.food_name ?? "",
+    description: meal.description ?? "",
+    carb_g: num(meal.carb_g),
+    sugar_g: num(meal.sugar_g),
+    protein_g: num(meal.protein_g),
+    fat_g: num(meal.fat_g),
+    veggies_servings: num(meal.veggies_servings),
+    fruits_servings: num(meal.fruits_servings),
+    calories_kcal: num(meal.calories_kcal),
+    raw_json: meal,
+    advice_text: parsed.advice_text ?? ""
   };
 }
