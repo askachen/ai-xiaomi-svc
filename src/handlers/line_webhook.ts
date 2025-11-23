@@ -11,25 +11,14 @@ export async function handleLineWebhook(
   env: any,
   ctx: ExecutionContext
 ): Promise<Response> {
-  // 為了偵錯，先複製 request，因為 body 只能被讀取一次
-  const reqClone = request.clone();
-
   let body: any;
   try {
     body = await request.json();
-  } catch (err) {
-    // 如果 JSON 解析失敗，記錄下原始的 request body 文字
-    const rawBody = await reqClone.text().catch(() => "Could not read body");
-    await logErrorToDb(env, "line_webhook_json_parse_error", err, {
-      rawBody,
-      headers: Object.fromEntries(reqClone.headers),
-    });
+  } catch {
     return new Response("Bad Request", { status: 400 });
   }
 
   const events: any[] = body.events ?? [];
-  // 記錄收到的原始 payload，無論 events 是否為空
-  await logErrorToDb(env, "line_webhook_payload_received", {}, body);
 
   for (const event of events) {
     if (event.type !== "message") {
