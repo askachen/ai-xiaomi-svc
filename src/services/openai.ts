@@ -1,6 +1,6 @@
 // src/services/openai.ts
 // 統一管理所有跟 OpenAI 有關的東西：
-// - chatWithClassification：文字聊天 + 意圖分類（使用 gpt-5-mini + JSON mode）
+// - chatWithClassification：文字聊天 + 意圖分類（使用 gpt-4.1-mini + JSON mode）
 // - analyzeMealFromImage：圖片 → 飲食分析（使用 gpt-4.1-mini + JSON mode）
 
 export type ChatResult = {
@@ -10,22 +10,16 @@ export type ChatResult = {
 
 const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
 
-// 文字聊天用：gpt-5-mini（便宜＋快）
-// 注意：gpt-5-mini 不支援 max_tokens / temperature，所以我們只用 max_completion_tokens。
+// 文字 / 圖片都先統一用 gpt-4.1-mini
 const CHAT_MODEL = "gpt-4.1-mini";
-
-// 圖片分析用：用 4.x 支援 vision 的模型會比較安全（5-mini 未必有 vision）
-// 你之後如果確認 5 系列支援 vision，再改這個常數就好。
 const VISION_MODEL = "gpt-4.1-mini";
 
 // ======================== 共用小工具 ========================
 
 function ensureStringContent(content: any): string {
-  // OpenAI 在 JSON mode 下通常會回傳 content 是「字串形式的 JSON」
   if (typeof content === "string") {
     return content;
   }
-  // 如果是 array 結構（某些情況會回 content parts），我們把它串起來
   if (Array.isArray(content)) {
     return content
       .map((p: any) => {
@@ -76,7 +70,7 @@ export async function chatWithClassification(
     body: JSON.stringify({
       model: CHAT_MODEL,
       messages,
-      // gpt-5-mini：要用 max_completion_tokens，不能用 max_tokens
+      // gpt-4.1-mini 這邊用 max_tokens OK
       max_tokens: 400,
       temperature: 0.7,
       response_format: { type: "json_object" }, // 強制回傳合法 JSON 字串
@@ -97,8 +91,6 @@ export async function chatWithClassification(
     const contentRaw = json.choices[0].message.content;
     const contentStr = ensureStringContent(contentRaw);
 
-    // JSON mode：contentStr 會是類似：
-    // {"reply": "...", "category": "diet"}
     const parsed = JSON.parse(contentStr);
 
     reply = parsed.reply ?? "";
@@ -198,9 +190,9 @@ JSON 欄位說明：
           ],
         } as any,
       ],
-      max_completion_tokens: 400,
+      // ⬇⬇⬇ 這裡改成 max_tokens，跟文字那段一樣風格
+      max_tokens: 400,
       response_format: { type: "json_object" },
-      // 這裡不設定 temperature，讓模型自行決定（也避免未來參數限制問題）
     }),
   });
 
