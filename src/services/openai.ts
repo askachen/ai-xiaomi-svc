@@ -87,22 +87,6 @@ export async function chatWithClassification(
     throw new Error("OPENAI_API_KEY is not configured");
   }
 
-  // 🧠 關鍵修正：
-  // 為了能使用 response_format = json_object，
-  // messages 裡面必須明確提到「json」這個字，
-  // 並且清楚指定輸出格式。
-  const jsonSystemMessage = {
-    role: "system",
-    content:
-      '你是一個助理，接下來「所有回覆」都必須使用 JSON 格式回覆，並且只能回傳 JSON，不要有任何多餘文字或註解。' +
-      '請回傳一個 json 物件，格式固定為：' +
-      '{"reply": "給使用者的繁體中文回覆文字", "category": "diet | emotion | health | general"}。' +
-      "其中 reply 請使用繁體中文，category 僅能是四種之一：diet（飲食 / 熱量 / 營養）、emotion（心情 / 情緒 / 動力）、health（睡眠 / 精神 / 身體狀況，但非飲食重點）、general（一般聊天或無法歸類）。" +
-      "請務必輸出合法 JSON，不要加註解，不要加其他 key。",
-  };
-
-  const finalMessages = [jsonSystemMessage, ...messages];
-
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -111,7 +95,7 @@ export async function chatWithClassification(
     },
     body: JSON.stringify({
       model: CHAT_MODEL,
-      messages: finalMessages,
+      messages: messages,
       max_tokens: 400,
       temperature: 0.7,
       // 這裡保留 json_object，但現在 messages 已經包含 json 說明，不會再報錯
