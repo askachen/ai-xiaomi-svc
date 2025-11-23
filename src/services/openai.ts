@@ -1,7 +1,7 @@
 // src/services/openai.ts
 // 統一管理所有跟 OpenAI 有關的東西：
-// - chatWithClassification：文字聊天 + 意圖分類（使用 gpt-4.1-mini + JSON mode）
-// - analyzeMealFromImage：圖片 → 飲食分析（使用 gpt-4.1-mini + JSON mode）
+// - chatWithClassification：文字聊天 + 意圖分類
+// - analyzeMealFromImage：圖片 → 飲食分析
 
 export type ChatResult = {
   reply: string;
@@ -10,9 +10,11 @@ export type ChatResult = {
 
 const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
 
-// 文字 / 圖片都先統一用 gpt-4.1-mini
+// 文字聊天用
 const CHAT_MODEL = "gpt-4.1-mini";
-const VISION_MODEL = "gpt-4.1-mini";
+
+// 圖片分析用（已知支援 image_url 的模型）
+const VISION_MODEL = "gpt-4o-mini";
 
 // ======================== 共用小工具 ========================
 
@@ -70,10 +72,9 @@ export async function chatWithClassification(
     body: JSON.stringify({
       model: CHAT_MODEL,
       messages,
-      // gpt-4.1-mini 這邊用 max_tokens OK
-      max_tokens: 400,
+      max_tokens: 400, // gpt-4.1-mini 支援
       temperature: 0.7,
-      response_format: { type: "json_object" }, // 強制回傳合法 JSON 字串
+      response_format: { type: "json_object" }, // 強制 JSON
     }),
   });
 
@@ -190,13 +191,18 @@ JSON 欄位說明：
           ],
         } as any,
       ],
-      // ⬇⬇⬇ 這裡改成 max_tokens，跟文字那段一樣風格
       max_tokens: 400,
       response_format: { type: "json_object" },
     }),
   });
 
   const json = await res.json();
+
+  // 如果有 error，直接丟出去給上層的 catch
+  if (json.error) {
+    console.error("OpenAI image error:", JSON.stringify(json));
+    throw new Error("OpenAI image error: " + JSON.stringify(json));
+  }
 
   if (!json.choices || !json.choices[0] || !json.choices[0].message) {
     console.error("OpenAI invalid response for meal image:", JSON.stringify(json));
