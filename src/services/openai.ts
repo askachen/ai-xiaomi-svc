@@ -1,7 +1,6 @@
 // src/services/openai.ts
-// 統一管理所有跟 OpenAI 有關的東西：
-// - chatWithClassification：文字聊天 + 意圖分類
-// - analyzeMealFromImage：圖片 → 飲食分析
+
+import { logErrorToDb } from "../services/db";
 
 export type ChatResult = {
   reply: string;
@@ -10,18 +9,16 @@ export type ChatResult = {
 
 const VALID_CATEGORIES = ["diet", "emotion", "health", "general"] as const;
 
-// 文字聊天用
+// 文字聊天：用 gpt-4.1-mini
 const CHAT_MODEL = "gpt-4.1-mini";
 
-// 圖片分析用（已知支援 image_url 的模型）
+// 圖片分析：用 gpt-4o-mini（官方穩定支援 image_url 的 vision 模型）
 const VISION_MODEL = "gpt-4o-mini";
 
 // ======================== 共用小工具 ========================
 
 function ensureStringContent(content: any): string {
-  if (typeof content === "string") {
-    return content;
-  }
+  if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
       .map((p: any) => {
@@ -42,7 +39,6 @@ function safeNumber(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// Cloudflare Workers 環境有 btoa，可以直接用
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = "";
   const bytes = new Uint8Array(buffer);
@@ -72,16 +68,18 @@ export async function chatWithClassification(
     body: JSON.stringify({
       model: CHAT_MODEL,
       messages,
-      max_tokens: 400, // gpt-4.1-mini 支援
+      max_tokens: 400,
       temperature: 0.7,
-      response_format: { type: "json_object" }, // 強制 JSON
+      response_format: { type: "json_object" },
     }),
   });
 
   const json = await res.json();
 
   if (!json.choices || !json.choices[0] || !json.choices[0].message) {
-    console.error("OpenAI invalid response for chat:", JSON.stringify(json));
+    await logErrorToDb(env, "openai_chat_invalid_response", undefined, {
+      json,
+    });
     throw new Error("Invalid OpenAI response: " + JSON.stringify(json));
   }
 
@@ -91,7 +89,6 @@ export async function chatWithClassification(
   try {
     const contentRaw = json.choices[0].message.content;
     const contentStr = ensureStringContent(contentRaw);
-
     const parsed = JSON.parse(contentStr);
 
     reply = parsed.reply ?? "";
@@ -107,7 +104,9 @@ export async function chatWithClassification(
         "小咪在想該怎麼回你，先讓我整理一下思緒～";
     }
   } catch (err) {
-    console.error("chatWithClassification parse error:", err);
+    await logErrorToDb(env, "openai_chat_parse_error", err, {
+      raw: json,
+    });
     reply = "小咪這邊有點忙碌，等等再和你聊聊好嗎？";
     category = "general";
   }
@@ -131,10 +130,6 @@ export type MealAnalysisResult = {
   raw_json: any;
 };
 
-/**
- * 將 LINE 傳來的 image buffer 丟給 OpenAI 做飲食判讀 + 營養估算
- * 回傳結構化結果，方便直接寫入 meal_logs。
- */
 export async function analyzeMealFromImage(
   env: any,
   imageBuffer: ArrayBuffer
@@ -169,6 +164,13 @@ JSON 欄位說明：
 請「只」回傳 JSON，不要多加文字說明。
   `.trim();
 
+  // --- 這裡也寫一筆 debug，之後可以看 req 大小 ---
+  await logErrorToDb(env, "openai_image_debug", undefined, {
+    step: "before_openai",
+    model: VISION_MODEL,
+    image_bytes: imageBuffer.byteLength,
+  });
+
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -196,16 +198,34 @@ JSON 欄位說明：
     }),
   });
 
-  const json = await res.json();
+  await logErrorToDb(env, "openai_image_debug", undefined, {
+    step: "after_fetch",
+    status: res.status,
+    ok: res.ok,
+  });
 
-  // 如果有 error，直接丟出去給上層的 catch
+  let json: any;
+  try {
+    json = await res.json();
+  } catch (err) {
+    await logErrorToDb(env, "openai_image_json_error", err, {
+      status: res.status,
+    });
+    throw err;
+  }
+
+  // 如果 OpenAI 回 error，就直接丟出去給上層 catch
   if (json.error) {
-    console.error("OpenAI image error:", JSON.stringify(json));
+    await logErrorToDb(env, "openai_image_api_error", undefined, {
+      error: json.error,
+    });
     throw new Error("OpenAI image error: " + JSON.stringify(json));
   }
 
   if (!json.choices || !json.choices[0] || !json.choices[0].message) {
-    console.error("OpenAI invalid response for meal image:", JSON.stringify(json));
+    await logErrorToDb(env, "openai_image_invalid_response", undefined, {
+      json,
+    });
     throw new Error("Invalid OpenAI image response: " + JSON.stringify(json));
   }
 
@@ -214,8 +234,10 @@ JSON 欄位說明：
   let parsed: any;
   try {
     parsed = JSON.parse(contentStr);
-  } catch (e) {
-    console.error("analyzeMealFromImage parse error:", e, "content:", contentStr);
+  } catch (err) {
+    await logErrorToDb(env, "openai_image_parse_error", err, {
+      contentStr,
+    });
     throw new Error("Failed to parse meal JSON: " + contentStr);
   }
 
