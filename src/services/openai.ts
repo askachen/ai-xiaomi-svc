@@ -160,6 +160,36 @@ export type MealAnalysisResult = {
   raw_json: any;
 };
 
+
+export async function analyzeMealFromImage(
+  env: any,
+  imageBuffer: ArrayBuffer
+): Promise<MealAnalysisResult> {
+  // 進來就印一筆，確認真的有跑到這支 function
+  await logErrorToDb(env, "openai_image_debug", undefined, {
+    step: "entered_analyze_stub",
+    image_bytes: imageBuffer.byteLength,
+  });
+
+  // 完全不呼叫 OpenAI，直接回一個固定結果
+  return {
+    meal_type: "debug_meal",
+    food_name: "除錯用測試餐點",
+    description: "這是 analyzeMealFromImage stub 回傳的固定結果",
+    carb_g: 10,
+    sugar_g: 5,
+    protein_g: 3,
+    fat_g: 2,
+    veggies_servings: 1,
+    fruits_servings: 0,
+    calories_kcal: 123,
+    raw_json: {
+      debug: true,
+    },
+  };
+}
+
+/*
 export async function analyzeMealFromImage(
   env: any,
   imageBuffer: ArrayBuffer
@@ -299,3 +329,4 @@ JSON 欄位說明：
     raw_json: parsed,
   };
 }
+*/
