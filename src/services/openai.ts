@@ -164,39 +164,47 @@ JSON 欄位說明：
 請「只」回傳 JSON，不要多加文字說明。
   `.trim();
 
-  // --- 這裡也寫一筆 debug，之後可以看 req 大小 ---
   await logErrorToDb(env, "openai_image_debug", undefined, {
     step: "before_openai",
     model: VISION_MODEL,
     image_bytes: imageBuffer.byteLength,
   });
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: VISION_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            {
-              type: "image_url",
-              image_url: {
-                url: imageUrl,
+  let res: Response;
+  try {
+    res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL, // gpt-4o-mini
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              {
+                type: "image_url",
+                image_url: {
+                  url: imageUrl,
+                },
               },
-            },
-          ],
-        } as any,
-      ],
-      max_tokens: 400,
-      response_format: { type: "json_object" },
-    }),
-  });
+            ],
+          } as any,
+        ],
+        max_tokens: 400,
+        response_format: { type: "json_object" },
+      }),
+    });
+  } catch (err) {
+    // 🔥 重點：如果 fetch 本身丟 error（例如網路、TLS 之類），在這裡記 log
+    await logErrorToDb(env, "openai_image_fetch_error", err, {
+      step: "fetch_threw",
+    });
+    throw err;
+  }
 
   await logErrorToDb(env, "openai_image_debug", undefined, {
     step: "after_fetch",
@@ -214,7 +222,6 @@ JSON 欄位說明：
     throw err;
   }
 
-  // 如果 OpenAI 回 error，就直接丟出去給上層 catch
   if (json.error) {
     await logErrorToDb(env, "openai_image_api_error", undefined, {
       error: json.error,
