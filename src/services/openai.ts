@@ -183,9 +183,7 @@ export async function analyzeMealFromImage(
     throw new Error("OPENAI_API_KEY is not configured");
   }
 
-  //const base64 = arrayBufferToBase64(imageBuffer);
-  const base64 =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const base64 = arrayBufferToBase64(imageBuffer);
   const imageUrl = `data:image/jpeg;base64,${base64}`;
 
   const prompt = `
